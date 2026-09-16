@@ -507,6 +507,12 @@ def patch_rsl_rl_resume_state() -> None:
 
     def _patched_save(self: Any, path: str, infos: dict | None = None) -> None:
         saved_dict = self.alg.save()
+        extrinsics_encoder = getattr(getattr(self.alg, "actor", None), "extrinsics_encoder", None)
+        if extrinsics_encoder is not None:
+            # HORA-style actors keep the encoder inside the actor so PPO jointly
+            # optimizes it. Also expose a stable top-level key for Stage 2 to
+            # freeze/load the privileged teacher without knowing actor internals.
+            saved_dict["extrinsics_encoder_state_dict"] = extrinsics_encoder.state_dict()
         saved_dict["iter"] = self.current_learning_iteration
         saved_dict["infos"] = infos
         saved_dict["unilab_logger_state"] = {

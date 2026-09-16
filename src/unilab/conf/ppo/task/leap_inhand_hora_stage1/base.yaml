@@ -1,0 +1,199 @@
+# @package _global_
+# HORA-style LEAP Stage 1. This owner intentionally inherits assets and grasp
+# diagnostics from the gait baseline while replacing its policy/action/reward
+# semantics. The gait-assisted owner remains unchanged.
+defaults:
+  - /task/leap_inhand/base
+  - _self_
+
+env:
+  observations:
+    actor:
+      # History is per-term: only hardware signals receive three frames.
+      history_length: null
+      flatten_history_dim: true
+      terms:
+        proprio: null
+        hardware:
+          func: unilab.tasks.manipulation.leap_inhand.hora.LeapHoraProprioObservation
+          history_length: 3
+          params:
+            entity_name: robot
+            action_name: hand
+            joint_noise: 0.0
+        object_properties:
+          func: unilab.tasks.manipulation.leap_inhand.hora.LeapObjectProperties
+          history_length: 0
+          params:
+            action_name: hand
+            mass_event_name: cylinder_mass_inertia
+            friction_event_name: cylinder_friction
+            com_event_name: cylinder_com
+            pd_event_name: pd_gains
+            # Physical values are SI. pd_gain_scale uses nominal Kp=1.0.
+            nominal_values:
+              cylinder_radius: 0.032
+              cylinder_length: 0.070
+              object_mass: 0.050
+              sliding_friction: 1.0
+              torsional_friction: 0.05
+              com_x: 0.0
+              com_y: 0.0
+              com_z: 0.0
+              pd_gain_scale: 1.0
+              latency_seconds: 0.0
+            # This declared contract is checkpointed through run_config.json.
+            property_ranges:
+              cylinder_radius: [0.028, 0.036]
+              cylinder_length: [0.060, 0.080]
+              object_mass: [0.030, 0.090]
+              sliding_friction: [0.60, 1.60]
+              torsional_friction: [0.03, 0.08]
+              com_x: [-0.003, 0.003]
+              com_y: [-0.003, 0.003]
+              com_z: [-0.004, 0.004]
+              pd_gain_scale: [0.80, 1.20]
+              latency_seconds: [0.0, 0.05]
+    critic:
+      terms:
+        rotation:
+          params:
+            joint_noise: 0.0
+            phase_period: 2.0
+  actions:
+    hand:
+      _target_: unilab.tasks.manipulation.leap_inhand.hora.LeapHoraPositionActionCfg
+      entity_name: robot
+      actuator_names: [".*"]
+      action_scale: 0.25
+      raw_action_clip: [-1.0, 1.0]
+      target_offset_limit: 0.25
+      latency_steps_range: [0, 0]
+      reset_target_from_joint_state: true
+      # Parent fields are explicitly inert; no cyclic reference is generated.
+      gait_amplitude_schedule: [{step: 0, amplitude: 0.0}]
+      thumb_gait_amplitude: 0.0
+      action_delay_probability_schedule: [{step: 0, probability: 0.0}]
+      action_noise_std_schedule: [{step: 0, std: 0.0}]
+  events:
+    reset_hand_object:
+      params:
+        grasp_cache_path: caches/leap_cylinder_grasp_diverse_5k.npy
+        randomization_fraction: 0.0
+        joint_noise: 0.0
+        object_xy_noise: 0.0
+        object_z_noise: 0.0
+        object_tilt_noise_deg: 0.0
+        object_velocity_noise: 0.0
+        object_angular_velocity_noise: 0.0
+    pd_gains:
+      params:
+        kp_range: [1.0, 1.0]
+        kd_range: [0.1, 0.1]
+        operation: abs
+    cylinder_mass_inertia:
+      params:
+        scale_range: [1.0, 1.0]
+    cylinder_friction:
+      params:
+        ranges: [1.0, 1.0]
+    cylinder_com:
+      func: unilab.envs.mdp.randomize_rigid_body_com
+      mode: reset
+      params:
+        asset_cfg:
+          _target_: unilab.managers.SceneEntityCfg
+          name: robot
+          body_names: object
+        com_range:
+          x: [0.0, 0.0]
+          y: [0.0, 0.0]
+          z: [0.0, 0.0]
+  metrics:
+    maximum_bidirectional_rotation:
+      params: {reward_name: frontier, field: frontier_angle}
+    net_committed_axis_rotation:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.frontier_state_metric
+      reduce: last
+      params: {reward_name: frontier, field: held_angle}
+    mean_frontier_speed:
+      params: {reward_name: frontier, field: frontier_speed}
+    frontier_progress_multiplier:
+      params: {reward_name: frontier, field: frontier_progress_multiplier}
+    direction_reversals:
+      params: {reward_name: frontier, field: direction_reversals}
+    direction_committed_fraction:
+      params: {reward_name: frontier, field: direction_committed}
+    opposite_direction_speed:
+      params: {reward_name: frontier, field: opposite_direction_speed}
+    directional_speed:
+      params: {reward_name: frontier, field: directional_speed}
+    filtered_directional_speed:
+      params: {reward_name: frontier, field: filtered_directional_speed}
+    fast_rotation_bonus:
+      params: {reward_name: frontier, field: fast_rotation_bonus}
+    stalled_fraction:
+      params: {reward_name: frontier, field: stalled}
+    reversal_penalty_fraction:
+      params: {reward_name: frontier, field: reversal_penalty_event}
+    milestones_reached:
+      params: {reward_name: frontier, field: milestones_reached}
+    joint_limit_occupancy:
+      func: unilab.tasks.manipulation.leap_inhand.hora.joint_limit_occupancy
+      params: {action_name: hand, margin_fraction: 0.02}
+    object_linear_velocity:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.object_linear_velocity_l1
+      params: {state_term_name: dropped}
+    estimated_torque:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.estimated_torque_l2
+      params: {state_term_name: dropped}
+    estimated_work:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.estimated_work_l2
+      params: {state_term_name: dropped}
+  curriculum:
+    start_pose_randomization: null
+
+reward:
+  rotate:
+    func: unilab.tasks.manipulation.leap_inhand.hora.hora_axial_rotation
+    weight: 1.0
+    params:
+      state_term_name: dropped
+      clip_min: -0.5
+      clip_max: 0.5
+  # Zero-weight stateful diagnostic: evaluation retains frontier/net/reversal
+  # metrics without making them part of the Stage 1 learning objective.
+  frontier:
+    func: unilab.tasks.manipulation.leap_inhand.manager_terms.LeapBidirectionalFrontierReward
+    weight: 0.0
+    params:
+      state_term_name: dropped
+      maximum_frontier_speed: 0.5
+      frontier_progress_gain_per_rad: 0.0
+      maximum_frontier_progress_multiplier: 1.0
+      reversal_speed_threshold: 0.02
+      direction_lock_threshold: 0.10
+      directional_velocity_scale: 0.0
+      directional_speed_filter_time_constant: 0.40
+      fast_rotation_bonus_scale: 0.0
+      opposite_direction_penalty_scale: 0.0
+      reversal_event_penalty: 0.0
+      stall_speed_threshold: 0.03
+      stall_grace_period: 0.50
+      stall_penalty_scale: 0.0
+      milestone_angles: [0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0]
+      milestone_bonus: 0.0
+  retained: {weight: 0.0}
+  palm_support: {weight: 0.0}
+  thumb_contact: {weight: 0.0}
+  completed: {weight: 0.0}
+  obj_linvel:
+    weight: -0.1
+  pose_diff:
+    weight: -0.001
+  torque:
+    weight: -0.02
+  work:
+    weight: -0.05
+  drop:
+    weight: -200.0

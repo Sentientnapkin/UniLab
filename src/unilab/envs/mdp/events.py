@@ -307,6 +307,15 @@ class _ModelFieldRandomizer(ManagerTermBase):
         self._defaults = defaults
         self._axes = self._resolve_axes(cfg.params.get("axes"), ranges)
         self._ranges = self._resolve_ranges(ranges, names)
+        value_shape = (env.num_envs, len(local_ids))
+        if defaults.ndim > 1:
+            value_shape += (defaults.shape[1],)
+        self._last_values = np.full(value_shape, np.nan, dtype=np.float64)
+
+    @property
+    def last_values(self) -> np.ndarray:
+        """Most recently sampled values, indexed by environment and selected entity."""
+        return self._last_values
 
     def _bind(
         self,
@@ -520,6 +529,7 @@ class _ModelFieldRandomizer(ManagerTermBase):
             raise ValueError(
                 f"EventManager term '{self._term_name}' produced negative, NaN, or Inf values"
             )
+        self._last_values[ids] = values[:, :, 0] if scalar else values
         self._write(values[:, :, 0] if scalar else values, ids)
 
 
@@ -640,6 +650,16 @@ class PdGains(ManagerTermBase):
                 term_name="pd_gains",
             )
         )
+        self._last_kp = np.full((env.num_envs, len(self._actuator_ids)), np.nan)
+        self._last_kd = np.full_like(self._last_kp, np.nan)
+
+    @property
+    def last_kp(self) -> np.ndarray:
+        return self._last_kp
+
+    @property
+    def last_kd(self) -> np.ndarray:
+        return self._last_kd
 
     def __call__(
         self,
@@ -659,6 +679,8 @@ class PdGains(ManagerTermBase):
         if self._operation == "scale":
             kp *= self._default_kp[None, :]
             kd *= self._default_kd[None, :]
+        self._last_kp[ids] = kp
+        self._last_kd[ids] = kd
         self._entity.write_actuator_gains_to_sim(
             kp,
             kd,
@@ -886,6 +908,11 @@ class RandomizeBodyMassInertia(ManagerTermBase):
             )
         self._scales: np.ndarray | None = None
 
+    @property
+    def scales(self) -> np.ndarray | None:
+        """Fixed mass/inertia scale sampled for each environment and selected body."""
+        return self._scales
+
     def __call__(
         self,
         env: ManagerBasedRlEnv,
@@ -957,6 +984,14 @@ class RandomizeRigidBodyCom(ManagerTermBase):
             asset_cfg.body_ids,
             term_name=term_name,
         )
+        self._last_offsets = np.full(
+            (env.num_envs, self._body_ids.size, 3), np.nan, dtype=np.float64
+        )
+
+    @property
+    def last_offsets(self) -> np.ndarray:
+        """Most recently sampled CoM offsets by environment and selected body."""
+        return self._last_offsets
 
     def __call__(
         self,
@@ -978,6 +1013,7 @@ class RandomizeRigidBodyCom(ManagerTermBase):
             ranges[:, 1],
             size=(ids.size, 3),
         )
+        self._last_offsets[ids] = offsets[:, None, :]
         values = self._default_ipos[None, :, :] + offsets[:, None, :]
         self._entity.write_body_ipos_to_sim(
             values,
