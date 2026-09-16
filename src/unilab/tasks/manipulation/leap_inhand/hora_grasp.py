@@ -695,6 +695,7 @@ class LeapHoraGraspRecorder(RecorderTerm):
         self._trial_mass_max = np.full(env.num_envs, -np.inf)
         self._trial_friction_min = np.full(env.num_envs, np.inf)
         self._trial_friction_max = np.full(env.num_envs, -np.inf)
+        self._rejected_validation = 0
         self._rejected_duplicates = 0
         self._saved = False
 
@@ -758,6 +759,24 @@ class LeapHoraGraspRecorder(RecorderTerm):
         self._cache().save(self._output_path)
         self._saved = True
 
+    def _accepted_distribution(self) -> dict[str, dict[str, int]]:
+        geometry_counts: dict[str, int] = {}
+        for radius, length in zip(self._radius, self._length, strict=True):
+            key = f"r={radius:.6g},l={length:.6g}"
+            geometry_counts[key] = geometry_counts.get(key, 0) + 1
+        family_counts = {name: 0 for name in self._reset.family_names}
+        for family_id in self._family:
+            name = self._reset.family_names[family_id]
+            family_counts[name] += 1
+        split_counts = {name: 0 for name in HORA_GRASP_SPLITS}
+        for split_id in self._split:
+            split_counts[HORA_GRASP_SPLITS[split_id]] += 1
+        return {
+            "geometry_counts": geometry_counts,
+            "family_counts": family_counts,
+            "split_counts": split_counts,
+        }
+
     def record_pre_reset(self, env_ids: np.ndarray) -> None:
         env = cast("_HoraGraspEnv", self._env)
         ids = np.asarray(env_ids, dtype=np.intp)
@@ -795,6 +814,7 @@ class LeapHoraGraspRecorder(RecorderTerm):
         for local, env_id in enumerate(ids):
             if not accepted[local]:
                 if not passed[local]:
+                    self._rejected_validation += 1
                     self._trial_mass_min[env_id] = np.inf
                     self._trial_mass_max[env_id] = -np.inf
                     self._trial_friction_min[env_id] = np.inf
@@ -824,6 +844,7 @@ class LeapHoraGraspRecorder(RecorderTerm):
         env.extras.setdefault("log", {}).update(
             {
                 "hora_grasp/cache_size": float(len(self._rows)),
+                "hora_grasp/rejected_validation": float(self._rejected_validation),
                 "hora_grasp/rejected_near_duplicates": float(self._rejected_duplicates),
             }
         )
@@ -834,8 +855,10 @@ class LeapHoraGraspRecorder(RecorderTerm):
                 summary={
                     "saved_grasps": len(self._rows),
                     "validation_trials": self._validation_trials,
+                    "rejected_validation": self._rejected_validation,
                     "rejected_near_duplicates": self._rejected_duplicates,
                     "output_path": str(self._output_path),
+                    **self._accepted_distribution(),
                 },
             )
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
@@ -13,7 +14,16 @@ from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from tensordict import TensorDict
 
+from unilab.base.run_control import RunComplete
+from unilab.scripts import generate_leap_hora_grasps
 from unilab.scripts.evaluate_leap_inhand import build_case_overrides
+from unilab.scripts.generate_leap_hora_grasps import (
+    collection_plan,
+    compose_collection_config,
+)
+from unilab.scripts.generate_leap_hora_grasps import (
+    main as generate_hora_grasps_main,
+)
 from unilab.tasks.manipulation.leap_inhand.evaluation import (
     load_evaluation_manifest,
     summarize_episode_reports,
@@ -27,6 +37,7 @@ from unilab.tasks.manipulation.leap_inhand.hora_grasp import (
     HORA_GRASP_CACHE_SCHEMA_VERSION,
     HoraGraspCache,
     LeapHoraCylinderMassInertia,
+    LeapHoraGraspRecorder,
     LeapHoraHandObjectReset,
 )
 
@@ -97,6 +108,94 @@ def test_hora_grasp_owner_has_geometry_families_and_v2_output() -> None:
     assert recorder.validation_trials == 3
 
 
+def test_hora_grasp_collection_command_composes_without_backend(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "hora_smoke.npz"
+    cfg = compose_collection_config(num_envs=4, target=8, output_path=output, seed=7)
+    plan = collection_plan(cfg, max_control_steps=1000)
+    assert plan.num_envs == 4
+    assert plan.target == 8
+    assert plan.output_path == output.resolve()
+    assert plan.validation_trials == 3
+    assert plan.geometries == ((0.028, 0.06), (0.032, 0.07), (0.036, 0.08))
+    assert {split for _, split in plan.families} == {"train", "validation", "held_out"}
+
+    result = generate_hora_grasps_main(
+        [
+            "--describe-only",
+            "--num-envs",
+            "4",
+            "--target",
+            "8",
+            "--seed",
+            "7",
+            "--max-control-steps",
+            "1000",
+            "--output",
+            str(output),
+        ]
+    )
+    assert result == 0
+    described = json.loads(capsys.readouterr().out)["collection_plan"]
+    assert described["schema_version"] == 2
+    assert described["collection_target"] == 8
+
+
+def test_hora_grasp_collection_loop_uses_zero_actions_and_run_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = compose_collection_config(
+        num_envs=2,
+        target=3,
+        output_path=tmp_path / "hora_smoke.npz",
+        seed=11,
+    )
+
+    class FakeAdapter:
+        def __init__(self, *args: Any, **kwargs: Any):
+            pass
+
+        def build_task_env_cfg_override(self) -> dict[str, Any]:
+            return {"seed": 11}
+
+    class FakeEnv:
+        action_space = SimpleNamespace(shape=(16,))
+
+        def __init__(self) -> None:
+            self.actions: list[np.ndarray] = []
+            self.closed = False
+
+        def init_state(self) -> None:
+            return None
+
+        def step(self, actions: np.ndarray) -> None:
+            self.actions.append(actions.copy())
+            if len(self.actions) == 2:
+                raise RunComplete(
+                    reason="hora_grasp_collection_target_reached",
+                    summary={"saved_grasps": 3, "rejected_near_duplicates": 1},
+                )
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake_env = FakeEnv()
+    monkeypatch.setattr(generate_leap_hora_grasps, "BackendAdapter", FakeAdapter)
+    monkeypatch.setattr(
+        generate_leap_hora_grasps, "create_env", lambda *args, **kwargs: fake_env
+    )
+
+    summary = generate_leap_hora_grasps.run_collection(cfg, max_control_steps=10)
+
+    assert summary["status"] == "complete"
+    assert summary["saved_grasps"] == 3
+    assert summary["control_steps"] == 2
+    assert fake_env.closed
+    assert len(fake_env.actions) == 2
+    np.testing.assert_array_equal(fake_env.actions[0], np.zeros((2, 16), dtype=np.float32))
+
+
 def test_hora_grasp_cache_v2_round_trip_and_family_split(tmp_path: Path) -> None:
     count = 3
     quat = np.zeros((count, 4), dtype=np.float32)
@@ -135,6 +234,21 @@ def test_hora_grasp_cache_v2_round_trip_and_family_split(tmp_path: Path) -> None
         HoraGraspCache(**invalid)
 
 
+def test_hora_grasp_completion_distribution_reports_every_axis() -> None:
+    recorder = object.__new__(LeapHoraGraspRecorder)
+    recorder._radius = [0.028, 0.028, 0.036]
+    recorder._length = [0.060, 0.060, 0.080]
+    recorder._family = [0, 1, 2]
+    recorder._split = [0, 0, 2]
+    recorder._reset = SimpleNamespace(family_names=("first", "second", "held"))
+
+    summary = recorder._accepted_distribution()
+
+    assert summary["geometry_counts"] == {"r=0.028,l=0.06": 2, "r=0.036,l=0.08": 1}
+    assert summary["family_counts"] == {"first": 1, "second": 1, "held": 1}
+    assert summary["split_counts"] == {"train": 2, "validation": 0, "held_out": 1}
+
+
 def test_hora_candidate_repeats_until_all_validation_trials_pass() -> None:
     reset = object.__new__(LeapHoraHandObjectReset)
     reset.validation_passes = np.zeros(2, dtype=np.int16)
@@ -158,8 +272,6 @@ def test_hora_candidate_repeats_until_all_validation_trials_pass() -> None:
 
 
 def test_hora_cylinder_mass_and_inertia_follow_sampled_geometry() -> None:
-    from types import SimpleNamespace
-
     written: dict[str, np.ndarray] = {}
     geometry = object.__new__(LeapHoraHandObjectReset)
     geometry.current_radius = np.asarray([0.03, 0.04], dtype=np.float32)
