@@ -1,0 +1,88 @@
+# @package _global_
+# First dynamics-generalization phase for the gait-assisted LEAP cylinder policy.
+# Kept separate from leap_inhand/base so earlier runs and the grasp generator
+# retain their original contracts.
+defaults:
+  - /task/leap_inhand/base
+  - _self_
+
+training:
+  task_name: LeapInhandRotation
+  sim_backend: mujoco
+  render_spacing: 0.5
+  cam_distance: 0.45
+  cam_lookat: [0.0, 0.0, 0.20]
+  cam_elevation: -20.0
+
+algo:
+  num_envs: 64
+  num_steps_per_env: 32
+  max_iterations: 201
+  obs_groups:
+    actor: [actor]
+    critic: [critic]
+  actor:
+    class_name: rsl_rl.models.RNNModel
+    hidden_dims: [512, 256, 128]
+    activation: elu
+    obs_normalization: true
+    rnn_type: gru
+    rnn_hidden_dim: 256
+    rnn_num_layers: 1
+    distribution_cfg:
+      class_name: rsl_rl.modules.distribution.GaussianDistribution
+      init_std: 0.1
+      std_type: scalar
+  critic:
+    class_name: rsl_rl.models.MLPModel
+    hidden_dims: [512, 256, 128]
+    activation: elu
+    obs_normalization: true
+  algorithm:
+    value_loss_coef: 4.0
+    desired_kl: 0.02
+    entropy_coef: 0.0
+
+env:
+  events:
+    cylinder_mass_inertia:
+      params:
+        # The authored cylinder is 50 g: this produces persistent 30--90 g
+        # domains across the 64 parallel environments.
+        scale_range: [0.6, 1.8]
+    cylinder_friction:
+      params:
+        # First widen only sliding friction; retain authored torsional and
+        # rolling values until the policy is stable in this phase.
+        ranges: [0.6, 1.6]
+    cylinder_com:
+      func: unilab.envs.mdp.randomize_rigid_body_com
+      mode: reset
+      params:
+        asset_cfg:
+          _target_: unilab.managers.SceneEntityCfg
+          name: robot
+          body_names: object
+        com_range:
+          x: [-0.003, 0.003]
+          y: [-0.003, 0.003]
+          z: [-0.004, 0.004]
+    cylinder_impulse:
+      func: unilab.envs.mdp.apply_body_impulse
+      mode: step
+      params:
+        asset_cfg:
+          _target_: unilab.managers.SceneEntityCfg
+          name: robot
+          body_names: object
+        # A short force pulse with no explicit torque. For a 50 g cylinder,
+        # the maximum resultant is about 10% of its weight.
+        force_range: [-0.03, 0.03]
+        torque_range: [0.0, 0.0]
+        duration_s: [0.05, 0.10]
+        cooldown_s: [4.0, 8.0]
+
+play_profile:
+  enabled: true
+  env:
+    render_spacing: 2.0

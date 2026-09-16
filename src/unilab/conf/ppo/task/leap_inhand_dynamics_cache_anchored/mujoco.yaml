@@ -1,0 +1,31 @@
+# @package _global_
+# Adapt the robust rotation policy to diverse validated grasps without pulling
+# every cached hand pose back toward the single authored reset command.
+defaults:
+  - /task/leap_inhand_dynamics/mujoco
+  - _self_
+
+env:
+  actions:
+    hand:
+      reset_target_from_joint_state: true
+      # Resumed runs restart the environment counter, so hold the previously
+      # learned command robustness fixed instead of replaying its old ramp.
+      action_delay_probability_schedule: [{step: 0, probability: 0.5}]
+      action_noise_std_schedule: [{step: 0, std: 0.01}]
+  events:
+    reset_hand_object:
+      params:
+        grasp_cache_path: caches/leap_cylinder_grasp_diverse_5k.npy
+        # Cache rows are already simulated and validated stable grasps. First
+        # learn their diversity directly; reintroduce pose noise afterward.
+        randomization_fraction: 0.0
+        joint_noise: 0.0
+        object_xy_noise: 0.0
+        object_z_noise: 0.0
+        object_tilt_noise_deg: 0.0
+        object_velocity_noise: 0.0
+        object_angular_velocity_noise: 0.0
+    cylinder_impulse: null
+  curriculum:
+    start_pose_randomization: null

@@ -127,9 +127,10 @@ def test_create_rsl_rl_playback_session_loads_checkpoint_and_runner_log_dir() ->
             captured["train_cfg"] = train_cfg
             captured["runner_device"] = device
 
-        def load(self, checkpoint, load_cfg):
+        def load(self, checkpoint, load_cfg, map_location=None):
             captured["checkpoint"] = checkpoint
             captured["load_cfg"] = load_cfg
+            captured["map_location"] = map_location
 
         def get_inference_policy(self, *, device):
             captured["policy_device"] = device
@@ -450,6 +451,23 @@ def test_infer_checkpoint_actor_input_dim_mlp_key(tmp_path: Path) -> None:
     assert infer_checkpoint_actor_input_dim(str(checkpoint)) == 42
 
 
+def test_infer_checkpoint_actor_input_dim_prefers_recurrent_input(tmp_path: Path) -> None:
+    from unilab.visualization.interactive_playback import infer_checkpoint_actor_input_dim
+
+    checkpoint = tmp_path / "model_10.pt"
+    torch.save(
+        {
+            "actor_state_dict": {
+                "rnn.rnn.weight_ih_l0": torch.zeros((768, 102)),
+                "mlp.0.weight": torch.zeros((512, 256)),
+            }
+        },
+        checkpoint,
+    )
+
+    assert infer_checkpoint_actor_input_dim(str(checkpoint)) == 102
+
+
 def test_infer_checkpoint_actor_input_dim_actor_prefixed_key(tmp_path: Path) -> None:
     from unilab.visualization.interactive_playback import infer_checkpoint_actor_input_dim
 
@@ -647,6 +665,7 @@ def test_playback_explicitly_skips_training_progress_for_stateful_runner(tmp_pat
     kwargs["checkpoint_resolver"] = lambda *args: str(tmp_path / "model.pt")
     create_rsl_rl_playback_session(**kwargs)
     assert captured["restore_training_state"] is False
+    assert captured["map_location"] == "cpu"
     assert captured["load_cfg"]["actor"] is True
     assert not any(value for key, value in captured["load_cfg"].items() if key != "actor")
 
@@ -817,3 +836,63 @@ def test_create_sac_playback_session_td3_load_filters_noise_scales(
     loaded_state, strict = captured["actor_load"]
     assert set(loaded_state.keys()) == {"weight"}
     assert strict is False
+
+
+@pytest.mark.parametrize("actor_source", ["actor", "runner"])
+def test_recurrent_playback_resets_only_done_rows_and_manual_reset(actor_source):
+    class MemoryActor:
+        is_recurrent = True
+
+        def __init__(self):
+            self.memory = torch.zeros(2)
+
+        def __call__(self, obs):
+            self.memory += 1
+            return self.memory[:, None].expand(-1, 2).clone()
+
+        def reset(self, dones=None):
+            if dones is None:
+                self.memory.zero_()
+            else:
+                self.memory[dones] = 0
+
+    class Wrapped(_FakeWrappedEnv):
+        def __init__(self, env):
+            super().__init__(env)
+            self.done = torch.zeros(2, dtype=torch.bool)
+
+        def step(self, actions):
+            obs, reward, _, info = super().step(actions)
+            return obs, reward, self.done, info
+
+    env = _fake_env(num_envs=2)
+    wrapped = Wrapped(env)
+    actor = MemoryActor()
+    kwargs = (
+        {"actor": actor}
+        if actor_source == "actor"
+        else {"runner": SimpleNamespace(alg=SimpleNamespace(actor=actor))}
+    )
+    session = RslRlPlaybackSession(
+        env=env,
+        wrapped_env=wrapped,
+        device="cpu",
+        action_mode="policy",
+        policy=actor,
+        num_envs=2,
+        **kwargs,
+    )
+    session.reset()
+    session.step_once()
+    first_actions = wrapped.last_actions.clone()
+    session.step_once()
+    torch.testing.assert_close(actor.memory, torch.tensor([2.0, 2.0]))
+    wrapped.done = torch.tensor([True, False])
+    session.step_once()
+    torch.testing.assert_close(actor.memory, torch.tensor([0.0, 3.0]))
+    wrapped.done.zero_()
+    session.step_once()
+    torch.testing.assert_close(wrapped.last_actions[:, 0], torch.tensor([1.0, 4.0]))
+    session.reset()
+    session.step_once()
+    torch.testing.assert_close(wrapped.last_actions, first_actions)

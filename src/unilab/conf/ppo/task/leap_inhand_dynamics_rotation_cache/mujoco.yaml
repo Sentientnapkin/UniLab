@@ -1,0 +1,26 @@
+# @package _global_
+# Fine-tune the existing fixed-anchor rotation policy on the policy-qualified
+# cache: 70% frontier grasps and 30% mastered anti-forgetting anchors.
+defaults:
+  - /task/leap_inhand_dynamics/mujoco
+  - _self_
+
+env:
+  actions:
+    hand:
+      action_delay_probability_schedule: [{step: 0, probability: 0.5}]
+      action_noise_std_schedule: [{step: 0, std: 0.01}]
+  events:
+    reset_hand_object:
+      params:
+        grasp_cache_path: caches/leap_cylinder_grasp_rotation_training.npy
+        randomization_fraction: 0.0
+        joint_noise: 0.0
+        object_xy_noise: 0.0
+        object_z_noise: 0.0
+        object_tilt_noise_deg: 0.0
+        object_velocity_noise: 0.0
+        object_angular_velocity_noise: 0.0
+    cylinder_impulse: null
+  curriculum:
+    start_pose_randomization: null

@@ -1,0 +1,128 @@
+<mujoco model="leap cylinder scene">
+  <include file="right_hand.xml"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="35" elevation="-50"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- CoM domain randomization changes the inertial offset at reset time, so
+         this free body must not use MuJoCo's compile-time simple-body layout. -->
+    <body name="object" pos="-0.03370 0.02378 0.252" simple="false">
+      <freejoint name="object_joint"/>
+
+      <geom
+        name="object_visual"
+        type="cylinder"
+        size="0.032 0.035"
+        rgba="0.75 0.10 0.80 1"
+        mass="0.05"
+        condim="6"
+        friction="1.0 0.05 0.01"
+      />
+
+      <geom
+        name="object_marker"
+        type="box"
+        size="0.020 0.002 0.001"
+        pos="0.010 0 0.029"
+        rgba="1 1 1 1"
+        contype="0"
+        conaffinity="0"
+        density="0"
+        group="1"
+      />
+    </body>
+  </worldbody>
+
+  <!-- Privileged task sensors.  These feed rewards/termination only; they are
+       intentionally absent from the deployable actor observation. -->
+  <sensor>
+    <contact name="if_object_contact" geom1="if_tip" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="if_ds_1_object_contact" geom1="if_ds_collision_1" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="if_ds_2_object_contact" geom1="if_ds_collision_2" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="if_ds_3_object_contact" geom1="if_ds_collision_3" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="mf_object_contact" geom1="mf_tip" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="mf_ds_1_object_contact" geom1="mf_ds_collision_1" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="mf_ds_2_object_contact" geom1="mf_ds_collision_2" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="mf_ds_3_object_contact" geom1="mf_ds_collision_3" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="rf_object_contact" geom1="rf_tip" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="rf_ds_1_object_contact" geom1="rf_ds_collision_1" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="rf_ds_2_object_contact" geom1="rf_ds_collision_2" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="rf_ds_3_object_contact" geom1="rf_ds_collision_3" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="th_object_contact" geom1="th_tip" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="th_ds_1_object_contact" geom1="th_ds_collision_1" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="th_ds_2_object_contact" geom1="th_ds_collision_2" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="th_ds_3_object_contact" geom1="th_ds_collision_3" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+
+    <contact name="palm_1_object_contact" geom1="palm_collision_1" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="palm_2_object_contact" geom1="palm_collision_2" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="palm_3_object_contact" geom1="palm_collision_3" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="palm_4_object_contact" geom1="palm_collision_4" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="palm_5_object_contact" geom1="palm_collision_5" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="palm_6_object_contact" geom1="palm_collision_6" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="palm_7_object_contact" geom1="palm_collision_7" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="palm_8_object_contact" geom1="palm_collision_8" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="palm_9_object_contact" geom1="palm_collision_9" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="palm_10_object_contact" geom1="palm_collision_10" geom2="object_visual"
+      data="found" num="1" reduce="mindist"/>
+  </sensor>
+
+  <keyframe>
+    <key
+      name="home"
+      qpos="
+        1.2755175 -0.23027008 0.65462 -0.0045021361
+        0.96829781 -0.14775903 0.77250643 -0.041147735
+        1.3694316 -0.21296087 0.60575128 0.31371423
+        0.44001169 1.511415 1.5552151 -0.10033212
+
+        -0.033697539 0.023782898 0.252
+        0.99931016 0.0066493863 -0.0059193501 0.036054733
+      "
+      ctrl="
+        1.33 -0.178 0.678 0
+        0.983 -0.147 0.773 -0.0409
+        1.37 -0.283 0.594 0.308
+        0.445 1.47 1.55 -0.1
+      "
+    />
+  </keyframe>
+</mujoco>

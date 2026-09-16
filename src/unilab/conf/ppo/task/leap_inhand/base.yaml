@@ -1,0 +1,471 @@
+# @package _global_
+# Canonical Leap rotation Manager-Based task declaration. Backend leaves own
+# only backend identity and algorithm/runtime tuning.
+env:
+  scene:
+    model_file: src/unilab/assets/robots/leap_hand/leap_cylinder_scene.xml
+    default_keyframe_name: home
+    entities:
+      robot:
+        # The hand is fixed; the free cylinder is the task's single root-state entity.
+        root_body_name: object
+        joint_names:
+          - if_mcp
+          - if_rot
+          - if_pip
+          - if_dip
+
+          - mf_mcp
+          - mf_rot
+          - mf_pip
+          - mf_dip
+
+          - rf_mcp
+          - rf_rot
+          - rf_pip
+          - rf_dip
+
+          - th_cmc
+          - th_axl
+          - th_mcp
+          - th_ipl
+
+        body_names:
+          - object
+          - if_ds
+          - mf_ds
+          - rf_ds
+          - th_ds
+
+        actuator_names:
+          - if_mcp_act
+          - if_rot_act
+          - if_pip_act
+          - if_dip_act
+
+          - mf_mcp_act
+          - mf_rot_act
+          - mf_pip_act
+          - mf_dip_act
+
+          - rf_mcp_act
+          - rf_rot_act
+          - rf_pip_act
+          - rf_dip_act
+
+          - th_cmc_act
+          - th_axl_act
+          - th_mcp_act
+          - th_ipl_act
+        geom_names:
+          - object_visual
+  sim_dt: 0.005
+  ctrl_dt: 0.05
+  max_episode_seconds: 20.0
+  observations:
+    actor:
+      history_length: 3
+      flatten_history_dim: true
+      terms:
+        proprio:
+          func: unilab.tasks.manipulation.leap_inhand.manager_terms.LeapProprioObservation
+          params:
+            entity_name: robot
+            action_name: hand
+            joint_noise: 0.02
+            phase_period: 2.0
+    critic:
+      history_length: 1
+      flatten_history_dim: true
+      terms:
+        rotation:
+          func: unilab.tasks.manipulation.leap_inhand.manager_terms.LeapRotationObservation
+          params:
+            entity_name: robot
+            action_name: hand
+            joint_noise: 0.02
+            torque_estimate_kp: 1.0
+            torque_estimate_kd: 0.1
+            phase_period: 2.0
+  actions:
+    hand:
+      _target_: unilab.tasks.manipulation.leap_inhand.manager_terms.LeapIncrementalPositionActionCfg
+      entity_name: robot
+      actuator_names: [".*"]
+      action_scale: 0.041666666666666664
+      raw_action_clip: [-1.0, 1.0]
+      # A bounded release/sweep/recontact reference that returns to zero at each
+      # finger-cycle boundary is added outside the integrated policy target.
+      gait_period: 2.0
+      gait_amplitude_schedule:
+        - {step: 0, amplitude: 0.075}
+      # Sim-to-real robustness phase relative to the model-3400 continuation:
+      # preserve the baseline for 50 iterations, then ramp gently over 100 more.
+      # A delayed command reuses the preceding policy output for one 50 ms step.
+      action_delay_probability_schedule:
+        - {step: 0, probability: 0.0}
+        - {step: 1600, probability: 0.0}
+        - {step: 4800, probability: 0.5}
+      action_noise_std_schedule:
+        - {step: 0, std: 0.0}
+        - {step: 1600, std: 0.0}
+        - {step: 4800, std: 0.01}
+      # A 100 ms thumb unload/sweep/recontact pulse occurs only where all
+      # opposing-finger release references are closed. It remains shorter than
+      # the 150 ms thumb-contact grace window.
+      thumb_gait_amplitude: 0.0125
+      thumb_gait_duration: 0.10
+      thumb_policy_target_offset_limit: 0.20
+      thumb_target_return_time_constant: 0.50
+      # Keep every opposing finger's learned persistent target near the stable
+      # grasp; the cyclic reference can still release each one briefly.
+      opposing_finger_policy_target_offset_limit: 0.25
+      opposing_finger_target_return_time_constant: 0.75
+      # The scene keyframe's authored control vector, which is not identical
+      # to its qpos.  Zero action should preserve this stable grasp command.
+      reset_target:
+        - 1.33
+        - -0.178
+        - 0.678
+        - 0.0
+        - 0.983
+        - -0.147
+        - 0.773
+        - -0.0409
+        - 1.37
+        - -0.283
+        - 0.594
+        - 0.308
+        - 0.445
+        - 1.47
+        - 1.55
+        - -0.1
+  events:
+    reset_scene_to_default:
+      func: unilab.envs.mdp.reset_scene_to_default
+      mode: reset
+    reset_hand_object:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.LeapHandObjectReset
+      mode: reset
+      params:
+        entity_name: robot
+        # null explicitly selects the model home pose. A configured path is
+        # fail-closed when missing or malformed.
+        grasp_cache_path: null
+        joint_noise: 0.03
+        object_velocity_noise: 0.025
+        object_z_offset: 0.0
+        randomization_fraction: 0.90
+        object_xy_noise: 0.004
+        object_z_noise: 0.002
+        object_tilt_noise_deg: 8.0
+        object_angular_velocity_noise: 0.25
+    pd_gains:
+      func: unilab.envs.mdp.pd_gains
+      mode: reset
+      params:
+        # Absolute gains vary around the values used to train model 3100.
+        kp_range: [0.9, 1.1]
+        kd_range: [0.085, 0.115]
+        operation: abs
+    cylinder_mass_inertia:
+      # A scale is sampled once per parallel environment and then held fixed,
+      # giving PPO persistent light/heavy cylinder domains rather than jitter.
+      func: unilab.envs.mdp.randomize_body_mass_inertia
+      mode: reset
+      params:
+        asset_cfg:
+          _target_: unilab.managers.SceneEntityCfg
+          name: robot
+          body_names: object
+        scale_range: [0.9, 1.1]
+    cylinder_friction:
+      func: unilab.envs.mdp.geom_friction
+      mode: reset
+      params:
+        asset_cfg:
+          _target_: unilab.managers.SceneEntityCfg
+          name: robot
+          geom_names: object_visual
+        # Scale the cylinder's sliding friction by ±15%; torsional and rolling
+        # coefficients retain their authored values.
+        ranges: [0.85, 1.15]
+        operation: scale
+        axes: [0]
+        shared_random: true
+    encoder_bias:
+      func: unilab.envs.mdp.randomize_encoder_bias
+      mode: reset
+      params:
+        bias_range: [-0.01, 0.01]
+        asset_cfg:
+          _target_: unilab.managers.SceneEntityCfg
+          name: robot
+          joint_names: ".*"
+  terminations:
+    dropped:
+      # This term caches the privileged grasp contract for rewards and metrics.
+      # Only geometric escape terminates; transient contact loss remains recoverable.
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.LeapGraspTermination
+      params:
+        observation_group: critic
+        observation_term: rotation
+        opposing_contact_sensor_groups:
+          - [if_object_contact, if_ds_1_object_contact,
+             if_ds_2_object_contact, if_ds_3_object_contact]
+          - [mf_object_contact, mf_ds_1_object_contact,
+             mf_ds_2_object_contact, mf_ds_3_object_contact]
+          - [rf_object_contact, rf_ds_1_object_contact,
+             rf_ds_2_object_contact, rf_ds_3_object_contact]
+        thumb_contact_sensor_names:
+          [th_object_contact, th_ds_1_object_contact,
+           th_ds_2_object_contact, th_ds_3_object_contact]
+        palm_contact_sensor_names:
+          - palm_1_object_contact
+          - palm_2_object_contact
+          - palm_3_object_contact
+          - palm_4_object_contact
+          - palm_5_object_contact
+          - palm_6_object_contact
+          - palm_7_object_contact
+          - palm_8_object_contact
+          - palm_9_object_contact
+          - palm_10_object_contact
+        maximum_valid_vertical_drop: 0.02
+        maximum_valid_lateral_drift: 0.02
+        maximum_valid_tilt_deg: 20.0
+        termination_vertical_drop: 0.04
+        termination_lateral_drift: 0.05
+        absolute_minimum_height: 0.125
+        minimum_opposing_contacts: 2
+        desired_opposing_contacts: 3
+        finger_contact_grace_seconds: 0.15
+        palm_support_grace_seconds: 0.25
+        palm_support_minimum_drop: 0.015
+        vertical_quality_scale: 0.015
+        lateral_quality_scale: 0.015
+        tilt_quality_scale_deg: 20.0
+    time_out:
+      func: unilab.envs.mdp.time_out
+      time_out: true
+  metrics:
+    valid_grasp_fraction:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.grasp_state_metric
+      params: {state_term_name: dropped, field: valid_grasp}
+    thumb_contact_fraction:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.grasp_state_metric
+      params: {state_term_name: dropped, field: thumb_contact}
+    index_finger_contact_fraction:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.grasp_state_metric
+      params: {state_term_name: dropped, field: index_contact}
+    middle_finger_contact_fraction:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.grasp_state_metric
+      params: {state_term_name: dropped, field: middle_contact}
+    outer_finger_contact_fraction:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.grasp_state_metric
+      params: {state_term_name: dropped, field: outer_contact}
+    opposing_contact_count:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.grasp_state_metric
+      params: {state_term_name: dropped, field: opposing_contact_count}
+    palm_support_fraction:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.grasp_state_metric
+      params: {state_term_name: dropped, field: palm_supported}
+    maximum_vertical_drop:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.grasp_state_metric
+      reduce: max
+      params: {state_term_name: dropped, field: vertical_drop}
+    maximum_lateral_drift:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.grasp_state_metric
+      reduce: max
+      params: {state_term_name: dropped, field: lateral_drift}
+    maximum_tilt_deg:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.grasp_state_metric
+      reduce: max
+      params: {state_term_name: dropped, field: tilt_deg}
+    maximum_bidirectional_rotation:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.frontier_state_metric
+      reduce: max
+      params: {reward_name: rotate, field: frontier_angle}
+    mean_frontier_speed:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.frontier_state_metric
+      params: {reward_name: rotate, field: frontier_speed}
+    frontier_progress_multiplier:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.frontier_state_metric
+      params: {reward_name: rotate, field: frontier_progress_multiplier}
+    direction_reversals:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.frontier_state_metric
+      reduce: last
+      params: {reward_name: rotate, field: direction_reversals}
+    direction_committed_fraction:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.frontier_state_metric
+      params: {reward_name: rotate, field: direction_committed}
+    opposite_direction_speed:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.frontier_state_metric
+      params: {reward_name: rotate, field: opposite_direction_speed}
+    directional_speed:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.frontier_state_metric
+      params: {reward_name: rotate, field: directional_speed}
+    filtered_directional_speed:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.frontier_state_metric
+      params: {reward_name: rotate, field: filtered_directional_speed}
+    fast_rotation_bonus:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.frontier_state_metric
+      params: {reward_name: rotate, field: fast_rotation_bonus}
+    stalled_fraction:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.frontier_state_metric
+      params: {reward_name: rotate, field: stalled}
+    reversal_penalty_fraction:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.frontier_state_metric
+      params: {reward_name: rotate, field: reversal_penalty_event}
+    milestones_reached:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.frontier_state_metric
+      reduce: last
+      params: {reward_name: rotate, field: milestones_reached}
+    gait_reference_amplitude:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.gait_state_metric
+      reduce: last
+      params: {action_name: hand, field: amplitude}
+    gait_reference_l2:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.gait_state_metric
+      params: {action_name: hand, field: reference_l2}
+    thumb_gait_reference_l2:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.gait_state_metric
+      params: {action_name: hand, field: thumb_reference_l2}
+    thumb_policy_offset_l2:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.gait_state_metric
+      params: {action_name: hand, field: thumb_policy_offset_l2}
+    index_finger_policy_offset_l2:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.gait_state_metric
+      params: {action_name: hand, field: index_finger_policy_offset_l2}
+    middle_finger_policy_offset_l2:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.gait_state_metric
+      params: {action_name: hand, field: middle_finger_policy_offset_l2}
+    outer_finger_policy_offset_l2:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.gait_state_metric
+      params: {action_name: hand, field: outer_finger_policy_offset_l2}
+    randomized_start_fraction:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.reset_randomization_metric
+      params: {event_name: reset_hand_object, field: randomized}
+    reset_joint_offset_l2:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.reset_randomization_metric
+      params: {event_name: reset_hand_object, field: joint_offset_l2}
+    reset_position_offset_l2:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.reset_randomization_metric
+      params: {event_name: reset_hand_object, field: position_offset_l2}
+    reset_tilt_offset_deg:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.reset_randomization_metric
+      params: {event_name: reset_hand_object, field: tilt_offset_deg}
+    reset_linear_velocity_l2:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.reset_randomization_metric
+      params: {event_name: reset_hand_object, field: linear_velocity_l2}
+    reset_angular_velocity_l2:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.reset_randomization_metric
+      params: {event_name: reset_hand_object, field: angular_velocity_l2}
+    policy_residual_l2:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.gait_state_metric
+      params: {action_name: hand, field: residual_l2}
+    command_delay_fraction:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.gait_state_metric
+      params: {action_name: hand, field: command_delayed}
+    command_noise_l2:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.gait_state_metric
+      params: {action_name: hand, field: command_noise_l2}
+    action_delay_probability:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.gait_state_metric
+      reduce: last
+      params: {action_name: hand, field: action_delay_probability}
+    action_noise_std:
+      func: unilab.tasks.manipulation.leap_inhand.manager_terms.gait_state_metric
+      reduce: last
+      params: {action_name: hand, field: action_noise_std}
+  scale_rewards_by_dt: true
+  policy_observation_group: actor
+  critic_observation_group: critic
+  curriculum:
+    start_pose_randomization:
+      func: unilab.envs.mdp.event_curriculum
+      params:
+        event_name: reset_hand_object
+        # Checkpoints do not restore the environment step counter. Model 3400
+        # already passed this widest tier, so hold it fixed while command
+        # latency/noise is introduced; retain a 10% fixed-start anchor.
+        stages:
+          - step: 0
+            params:
+              randomization_fraction: 0.90
+              joint_noise: 0.03
+              object_xy_noise: 0.004
+              object_z_noise: 0.002
+              object_tilt_noise_deg: 8.0
+              object_velocity_noise: 0.025
+              object_angular_velocity_noise: 0.25
+
+reward:
+  rotate:
+    func: unilab.tasks.manipulation.leap_inhand.manager_terms.LeapBidirectionalFrontierReward
+    weight: 8.0
+    params:
+      state_term_name: dropped
+      maximum_frontier_speed: 0.5
+      frontier_progress_gain_per_rad: 0.75
+      maximum_frontier_progress_multiplier: 3.0
+      reversal_speed_threshold: 0.02
+      direction_lock_threshold: 0.10
+      directional_velocity_scale: 1.0
+      directional_speed_filter_time_constant: 0.40
+      fast_rotation_bonus_scale: 1.0
+      opposite_direction_penalty_scale: 1.0
+      reversal_event_penalty: 0.05
+      stall_speed_threshold: 0.03
+      stall_grace_period: 0.50
+      stall_penalty_scale: 0.05
+      milestone_angles: [0.25, 0.50, 0.75, 1.00, 1.50, 2.00, 3.00, 4.00, 5.00, 6.283]
+      milestone_bonus: 0.25
+  retained:
+    func: unilab.tasks.manipulation.leap_inhand.manager_terms.grasp_quality
+    weight: 1.0
+    params:
+      state_term_name: dropped
+  palm_support:
+    func: unilab.tasks.manipulation.leap_inhand.manager_terms.palm_support
+    weight: -1.0
+    params:
+      state_term_name: dropped
+  thumb_contact:
+    func: unilab.tasks.manipulation.leap_inhand.manager_terms.thumb_contact
+    weight: 0.5
+    params:
+      state_term_name: dropped
+  completed:
+    func: unilab.tasks.manipulation.leap_inhand.manager_terms.successful_rotating_grasp
+    weight: 10.0
+    params:
+      state_term_name: dropped
+      time_out_term_name: time_out
+      rotation_reward_name: rotate
+      minimum_frontier_angle: 1.0
+  obj_linvel:
+    func: unilab.tasks.manipulation.leap_inhand.manager_terms.object_linear_velocity_l1
+    weight: -0.1
+    params:
+      state_term_name: dropped
+  pose_diff:
+    func: unilab.tasks.manipulation.leap_inhand.manager_terms.hand_pose_deviation_l2
+    weight: -0.001
+    params:
+      state_term_name: dropped
+  torque:
+    func: unilab.tasks.manipulation.leap_inhand.manager_terms.estimated_torque_l2
+    weight: -0.02
+    params:
+      state_term_name: dropped
+  work:
+    func: unilab.tasks.manipulation.leap_inhand.manager_terms.estimated_work_l2
+    weight: -0.05
+    params:
+      state_term_name: dropped
+  drop:
+    func: unilab.tasks.manipulation.leap_inhand.manager_terms.dropped
+    weight: -200.0
+    params:
+      state_term_name: dropped

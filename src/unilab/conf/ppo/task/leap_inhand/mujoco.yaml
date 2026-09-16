@@ -1,0 +1,44 @@
+# @package _global_
+defaults:
+  - /task/leap_inhand/base
+  - _self_
+
+training:
+  task_name: LeapInhandRotation
+  sim_backend: mujoco
+  render_spacing: 0.5
+  cam_distance: 0.45
+  cam_lookat: [0.0, 0.0, 0.20]
+  cam_elevation: -20.0
+algo:
+  num_envs: 64
+  num_steps_per_env: 32
+  max_iterations: 201
+  obs_groups:
+    actor: [actor]
+    critic: [critic]
+  actor:
+    class_name: rsl_rl.models.RNNModel
+    hidden_dims: [512, 256, 128]
+    activation: elu
+    obs_normalization: true
+    rnn_type: gru
+    rnn_hidden_dim: 256
+    rnn_num_layers: 1
+    distribution_cfg:
+      class_name: rsl_rl.modules.distribution.GaussianDistribution
+      init_std: 0.1
+      std_type: scalar
+  critic:
+    class_name: rsl_rl.models.MLPModel
+    hidden_dims: [512, 256, 128]
+    activation: elu
+    obs_normalization: true
+  algorithm:
+    value_loss_coef: 4.0
+    desired_kl: 0.02
+    entropy_coef: 0.0
+play_profile:
+  enabled: true
+  env:
+    render_spacing: 2.0

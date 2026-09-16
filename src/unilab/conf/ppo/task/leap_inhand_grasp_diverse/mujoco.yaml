@@ -1,0 +1,35 @@
+# @package _global_
+# Diversity-aware expansion of the validated LEAP cylinder grasp cache.
+defaults:
+  - /task/leap_inhand_grasp/mujoco
+  - _self_
+
+algo:
+  max_iterations: 2000  # recorder stops as soon as 5,000 total rows are saved
+
+env:
+  # The rotation task's curriculum would otherwise replace the exploration
+  # values below with its much narrower policy-training reset noise.
+  curriculum:
+    start_pose_randomization: null
+  events:
+    reset_hand_object:
+      params:
+        # Explore around known-stable grasps instead of repeatedly perturbing
+        # only the single authored home pose.
+        grasp_cache_path: caches/leap_cylinder_grasp_1k.npy
+        joint_noise: 0.18
+        object_xy_noise: 0.008
+        object_z_noise: 0.006
+        object_tilt_noise_deg: 18.0
+  recorders:
+    grasp_cache:
+      params:
+        # Preserve the original validated family as anchors and collect 4,000
+        # additional stable, non-near-duplicate states.
+        initial_cache_path: caches/leap_cylinder_grasp_1k.npy
+        output_path: caches/leap_cylinder_grasp_diverse_5k.npy
+        collection_target: 5000
+        minimum_joint_rms_rad: 0.015
+        minimum_position_distance_m: 0.002
+        minimum_axis_angle_deg: 3.0

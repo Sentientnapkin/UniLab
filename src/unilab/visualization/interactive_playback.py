@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -226,14 +227,26 @@ class RslRlPlaybackSession:
         self.obs: Any | None = None
         self.step_count = 0
 
+    def _reset_policy_memory(self, dones: Any | None = None) -> None:
+        actor = self.actor
+        if actor is None and self.runner is not None:
+            actor = self.runner.alg.actor
+        if actor is not None and getattr(actor, "is_recurrent", False):
+            if dones is not None:
+                dones = torch.as_tensor(dones, device=self.device, dtype=torch.bool)
+                dones = dones.reshape(self.num_envs)
+            actor.reset(dones)
+
     def reset(self) -> Any:
         self.obs, _info = self.wrapped_env.reset()
+        self._reset_policy_memory()
         self.step_count = 0
         return self.obs
 
     def step_once(self) -> Any:
         actions = self._build_actions()
-        self.obs, _reward, _done, _info = self.wrapped_env.step(actions)
+        self.obs, _reward, done, _info = self.wrapped_env.step(actions)
+        self._reset_policy_memory(done)
         self.step_count += 1
         return self.obs
 
@@ -390,11 +403,24 @@ def select_torch_device() -> str:
 
 
 def infer_checkpoint_actor_input_dim(ckpt_path: str) -> int | None:
-    """Infer the actor MLP input dim from an rsl_rl checkpoint, if detectable."""
+    """Infer the actor observation dim from an rsl_rl checkpoint, if detectable."""
     loaded = torch.load(ckpt_path, map_location="cpu", weights_only=True)
     state_dict = loaded.get("actor_state_dict")
     if not isinstance(state_dict, dict):
         return None
+
+    # Recurrent actors consume observations in the input-to-hidden projection;
+    # their MLP head consumes the recurrent latent and therefore has a different
+    # input width.
+    for key in (
+        "rnn.rnn.weight_ih_l0",
+        "actor.rnn.rnn.weight_ih_l0",
+        "rnn.weight_ih_l0",
+        "actor.rnn.weight_ih_l0",
+    ):
+        weight = state_dict.get(key)
+        if isinstance(weight, torch.Tensor) and weight.ndim == 2:
+            return int(weight.shape[1])
 
     # Common rsl-rl naming: "mlp.0.weight" or nested prefixes ending with ".0.weight".
     for key in ("mlp.0.weight", "actor.mlp.0.weight"):
@@ -534,9 +560,8 @@ def create_rsl_rl_playback_session(
                         if isinstance(runner, TrainingStateOnPolicyRunner)
                         else {}
                     )
-                    runner.load(
-                        checkpoint_path,
-                        load_cfg={
+                    load_kwargs: dict[str, Any] = {
+                        "load_cfg": {
                             "actor": True,
                             "critic": False,
                             "optimizer": False,
@@ -544,7 +569,14 @@ def create_rsl_rl_playback_session(
                             "rnd": False,
                         },
                         **load_options,
-                    )
+                    }
+                    load_parameters = inspect.signature(runner.load).parameters
+                    if "map_location" in load_parameters or any(
+                        parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in load_parameters.values()
+                    ):
+                        load_kwargs["map_location"] = device_name
+                    runner.load(checkpoint_path, **load_kwargs)
             policy = runner.get_inference_policy(device=device_name)
 
     log(f"Action mode: {playback_cfg.action_mode}")

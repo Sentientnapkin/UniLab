@@ -317,7 +317,7 @@ class ManagerBasedRlEnv(NpEnv):
         return self
 
     def get_playback_debug_overlays(self) -> DebugOverlayGetter | None:
-        """Aggregate playback overlays from command terms that provide one.
+        """Aggregate playback overlays from task terms that provide one.
 
         Terms opt in by implementing ``playback_debug_overlay_getter()``,
         which returns a per-frame getter following the
@@ -326,8 +326,11 @@ class ManagerBasedRlEnv(NpEnv):
         ``None`` when no term provides an overlay.
         """
         getters: list[DebugOverlayGetter] = []
-        for name in self.command_manager.active_terms:
-            term = self.command_manager.get_term(name)
+        terms = [self.command_manager.get_term(name) for name in self.command_manager.active_terms]
+        terms.extend(
+            self.reward_manager.get_term_cfg(name).func for name in self.reward_manager.active_terms
+        )
+        for term in terms:
             provider = getattr(term, "playback_debug_overlay_getter", None)
             if provider is None:
                 continue

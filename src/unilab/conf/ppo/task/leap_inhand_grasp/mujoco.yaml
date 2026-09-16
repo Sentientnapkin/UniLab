@@ -1,0 +1,126 @@
+# @package _global_
+defaults:
+  - /task/leap_inhand/base
+  - _self_
+
+training:
+  task_name: LeapInhandRotationGrasp
+  sim_backend: mujoco
+  no_play: true
+  render_spacing: 0.5
+  cam_distance: 0.45
+  cam_lookat: [0.0, 0.0, 0.20]
+  cam_elevation: -20.0
+
+algo:
+  num_envs: 64
+  num_steps_per_env: 32
+  max_iterations: 1000  # recorder stops the run as soon as the target is saved
+  obs_groups:
+    actor: [actor]
+    critic: [critic]
+  actor:
+    class_name: rsl_rl.models.MLPModel
+    hidden_dims: [256, 128]
+    activation: elu
+    obs_normalization: true
+    distribution_cfg:
+      class_name: rsl_rl.modules.distribution.GaussianDistribution
+      init_std: 0.1
+      std_type: scalar
+  critic:
+    class_name: rsl_rl.models.MLPModel
+    hidden_dims: [256, 128]
+    activation: elu
+    obs_normalization: true
+  algorithm:
+    value_loss_coef: 4.0
+    desired_kl: 0.02
+    entropy_coef: 0.0
+
+env:
+  max_episode_seconds: 1.0
+  actions:
+    hand:
+      _target_: unilab.tasks.manipulation.leap_inhand.grasp_gen.LeapGraspHoldActionCfg
+      action_scale: 0.0
+      gait_amplitude_schedule: [{step: 0, amplitude: 0.0}]
+      thumb_gait_amplitude: 0.0
+      thumb_policy_target_offset_limit: null
+      thumb_target_return_time_constant: null
+      opposing_finger_policy_target_offset_limit: null
+      opposing_finger_target_return_time_constant: null
+      action_delay_probability_schedule: [{step: 0, probability: 0.0}]
+      action_noise_std_schedule: [{step: 0, std: 0.0}]
+  events:
+    reset_hand_object:
+      params:
+        grasp_cache_path: null
+        joint_noise: 0.12
+        object_velocity_noise: 0.0
+        object_z_offset: 0.0
+        randomization_fraction: 1.0
+        object_xy_noise: 0.006
+        object_z_noise: 0.004
+        object_tilt_noise_deg: 12.0
+        object_angular_velocity_noise: 0.0
+    pd_gains:
+      params:
+        kp_range: [1.0, 1.0]
+        kd_range: [0.1, 0.1]
+    cylinder_mass_inertia:
+      params:
+        scale_range: [1.0, 1.0]
+    cylinder_friction:
+      params:
+        ranges: [1.0, 1.0]
+    encoder_bias:
+      params:
+        bias_range: [0.0, 0.0]
+  terminations:
+    invalid_grasp:
+      func: unilab.tasks.manipulation.leap_inhand.grasp_gen.LeapGraspQualityTermination
+      params:
+        state_term_name: dropped
+        minimum_validation_seconds: 0.5
+        maximum_linear_speed: 0.02
+        maximum_angular_speed: 0.20
+        enabled: true
+  metrics:
+    stable_candidate:
+      func: unilab.tasks.manipulation.leap_inhand.grasp_gen.LeapGraspQualityMetric
+      params: {quality_term_name: invalid_grasp, condition: stable}
+    candidate_valid_grasp:
+      func: unilab.tasks.manipulation.leap_inhand.grasp_gen.LeapGraspQualityMetric
+      params: {quality_term_name: invalid_grasp, condition: valid_grasp}
+    candidate_linear_speed:
+      func: unilab.tasks.manipulation.leap_inhand.grasp_gen.LeapGraspQualityMetric
+      params: {quality_term_name: invalid_grasp, condition: linear_speed}
+    candidate_angular_speed:
+      func: unilab.tasks.manipulation.leap_inhand.grasp_gen.LeapGraspQualityMetric
+      params: {quality_term_name: invalid_grasp, condition: angular_speed}
+  recorders:
+    grasp_cache:
+      func: unilab.tasks.manipulation.leap_inhand.grasp_gen.LeapGraspRecorder
+      params:
+        quality_term_name: invalid_grasp
+        output_path: caches/leap_cylinder_grasp_1k.npy
+        collection_target: 1000
+        auto_save: true
+
+reward:
+  rotate: {weight: 0.0}
+  retained: {weight: 0.0}
+  palm_support: {weight: 0.0}
+  thumb_contact: {weight: 0.0}
+  completed: {weight: 0.0}
+  obj_linvel: {weight: 0.0}
+  pose_diff: {weight: 0.0}
+  torque: {weight: 0.0}
+  work: {weight: 0.0}
+  drop: {weight: 0.0}
+
+play_profile:
+  enabled: true
+  env:
+    render_spacing: 2.0

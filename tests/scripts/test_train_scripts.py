@@ -147,6 +147,24 @@ def _train_appo():
     return _load_script("train_appo")
 
 
+@pytest.mark.parametrize("load_run", [None, "", "-1", -1])
+def test_ppo_default_load_run_does_not_request_resume(
+    monkeypatch: pytest.MonkeyPatch, load_run: object
+) -> None:
+    mod = _train_rsl_rl(monkeypatch)
+
+    assert mod._training_resume_requested(load_run) is False
+
+
+@pytest.mark.parametrize("load_run", ["run1", "/tmp/model_100.pt", 100])
+def test_ppo_explicit_load_run_requests_resume(
+    monkeypatch: pytest.MonkeyPatch, load_run: object
+) -> None:
+    mod = _train_rsl_rl(monkeypatch)
+
+    assert mod._training_resume_requested(load_run) is True
+
+
 def test_offpolicy_hydra_default_algo():
     cfg = _offpolicy_cfg()
     assert cfg.algo.algo == "sac"
@@ -707,6 +725,136 @@ def test_build_ppo_env_cfg_override_allegro_grasp_cli_override_wins(
     assert cfg.algo.max_iterations == 1
     assert env_cfg_override["recorders"]["grasp_cache"]["params"]["collection_target"] == 128
     assert env_cfg_override["rewards"]["rotate"]["weight"] == pytest.approx(0.3)
+
+
+def test_build_ppo_env_cfg_override_leap_grasp_mujoco(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    mod = _train_rsl_rl(monkeypatch)
+    cfg = _ppo_cfg(["task=leap_inhand_grasp/mujoco"])
+
+    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
+
+    assert cfg.training.task_name == "LeapInhandRotationGrasp"
+    assert env_cfg_override["actions"]["hand"]["action_scale"] == pytest.approx(0.0)
+    reset = env_cfg_override["events"]["reset_hand_object"]["params"]
+    assert reset["grasp_cache_path"] is None
+    assert reset["randomization_fraction"] == pytest.approx(1.0)
+    assert reset["joint_noise"] == pytest.approx(0.12)
+    quality = env_cfg_override["terminations"]["invalid_grasp"]["params"]
+    assert quality["minimum_validation_seconds"] == pytest.approx(0.5)
+    assert quality["maximum_linear_speed"] == pytest.approx(0.02)
+    recorder = env_cfg_override["recorders"]["grasp_cache"]["params"]
+    assert recorder["collection_target"] == 1000
+    assert recorder["output_path"] == "caches/leap_cylinder_grasp_1k.npy"
+
+
+def test_build_ppo_env_cfg_override_leap_diverse_grasp_mujoco(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    mod = _train_rsl_rl(monkeypatch)
+    cfg = _ppo_cfg(["task=leap_inhand_grasp_diverse/mujoco"])
+
+    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
+
+    reset = env_cfg_override["events"]["reset_hand_object"]["params"]
+    assert reset["grasp_cache_path"] == "caches/leap_cylinder_grasp_1k.npy"
+    assert reset["joint_noise"] == pytest.approx(0.18)
+    assert reset["object_xy_noise"] == pytest.approx(0.008)
+    assert reset["object_z_noise"] == pytest.approx(0.006)
+    assert reset["object_tilt_noise_deg"] == pytest.approx(18.0)
+    assert env_cfg_override["curriculum"]["start_pose_randomization"] is None
+    recorder = env_cfg_override["recorders"]["grasp_cache"]["params"]
+    assert recorder["initial_cache_path"] == "caches/leap_cylinder_grasp_1k.npy"
+    assert recorder["output_path"] == "caches/leap_cylinder_grasp_diverse_5k.npy"
+    assert recorder["collection_target"] == 5000
+    assert recorder["minimum_joint_rms_rad"] == pytest.approx(0.015)
+    assert recorder["minimum_position_distance_m"] == pytest.approx(0.002)
+    assert recorder["minimum_axis_angle_deg"] == pytest.approx(3.0)
+
+
+def test_build_ppo_env_cfg_override_leap_dynamics_mujoco(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    mod = _train_rsl_rl(monkeypatch)
+    cfg = _ppo_cfg(["task=leap_inhand_dynamics/mujoco"])
+
+    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
+
+    assert cfg.training.task_name == "LeapInhandRotation"
+    events = env_cfg_override["events"]
+    assert events["cylinder_mass_inertia"]["params"]["scale_range"] == [0.6, 1.8]
+    assert events["cylinder_friction"]["params"]["ranges"] == [0.6, 1.6]
+    assert events["cylinder_com"]["params"]["com_range"] == {
+        "x": [-0.003, 0.003],
+        "y": [-0.003, 0.003],
+        "z": [-0.004, 0.004],
+    }
+    impulse = events["cylinder_impulse"]
+    assert impulse["mode"] == "step"
+    assert impulse["params"]["force_range"] == [-0.03, 0.03]
+    assert impulse["params"]["duration_s"] == [0.05, 0.1]
+    assert env_cfg_override["actions"]["hand"]["gait_amplitude_schedule"] == [
+        {"step": 0, "amplitude": 0.075}
+    ]
+
+
+def test_build_ppo_env_cfg_override_leap_cache_anchored_dynamics_mujoco(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    mod = _train_rsl_rl(monkeypatch)
+    cfg = _ppo_cfg(["task=leap_inhand_dynamics_cache_anchored/mujoco"])
+
+    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
+
+    action = env_cfg_override["actions"]["hand"]
+    assert action["reset_target_from_joint_state"] is True
+    assert action["action_delay_probability_schedule"] == [
+        {"step": 0, "probability": 0.5}
+    ]
+    assert action["action_noise_std_schedule"] == [{"step": 0, "std": 0.01}]
+    reset = env_cfg_override["events"]["reset_hand_object"]["params"]
+    assert reset["grasp_cache_path"] == "caches/leap_cylinder_grasp_diverse_5k.npy"
+    assert reset["randomization_fraction"] == pytest.approx(0.0)
+    assert reset["joint_noise"] == pytest.approx(0.0)
+    assert reset["object_tilt_noise_deg"] == pytest.approx(0.0)
+    assert env_cfg_override["events"]["cylinder_impulse"] is None
+    assert env_cfg_override["curriculum"]["start_pose_randomization"] is None
+
+
+def test_build_ppo_play_cfg_override_leap_grasp_qualification(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    mod = _train_rsl_rl(monkeypatch)
+    cfg = _ppo_cfg(["task=leap_inhand_grasp_qualify/mujoco"])
+
+    env_cfg_override = mod.build_ppo_play_env_cfg_override(cfg)
+
+    assert cfg.training.play_only is True
+    assert cfg.training.play_render_mode == "none"
+    assert cfg.training.headless_play_collection is True
+    assert cfg.training.play_steps == 100000
+    reset = env_cfg_override["events"]["reset_hand_object"]["params"]
+    assert reset["grasp_cache_sampling"] == "sequential"
+    assert reset["grasp_cache_start_index"] == 0
+    recorder = env_cfg_override["recorders"]["grasp_qualification"]["params"]
+    assert recorder["episodes_per_grasp"] == 3
+    assert recorder["training_mastered_fraction"] == pytest.approx(0.30)
+
+
+def test_build_ppo_env_cfg_override_leap_rotation_cache_training(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    mod = _train_rsl_rl(monkeypatch)
+    cfg = _ppo_cfg(["task=leap_inhand_dynamics_rotation_cache/mujoco"])
+
+    env_cfg_override = mod.build_ppo_env_cfg_override(cfg)
+
+    reset = env_cfg_override["events"]["reset_hand_object"]["params"]
+    assert reset["grasp_cache_path"] == "caches/leap_cylinder_grasp_rotation_training.npy"
+    assert reset["randomization_fraction"] == pytest.approx(0.0)
+    assert "reset_target_from_joint_state" not in env_cfg_override["actions"]["hand"]
+    assert env_cfg_override["events"]["cylinder_impulse"] is None
 
 
 @pytest.mark.parametrize("std_type", ["scalar", "log"])
@@ -2864,6 +3012,52 @@ def test_train_rsl_rl_play_uses_shared_playback_session_factory(
     assert env_captured["play_steps"] == 5
     assert env_captured["init_obs"] == "obs_0"
     assert env_captured["next_obs"] == "obs_1"
+
+
+def test_train_rsl_rl_play_runs_bounded_headless_collection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    mod = _train_rsl_rl(monkeypatch)
+    cfg = _ppo_cfg(["task=leap_inhand_grasp_qualify/mujoco"])
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    checkpoint = run_dir / "model_4375.pt"
+    mod.torch.save({"actor_state_dict": {}}, checkpoint)
+
+    class FakeSession:
+        def __init__(self):
+            self.env = types.SimpleNamespace()
+            self.runner = object()
+            self.reset_calls = 0
+            self.step_calls = 0
+
+        def reset(self):
+            self.reset_calls += 1
+            return "obs_0"
+
+        def step_once(self):
+            self.step_calls += 1
+            if self.step_calls == 3:
+                raise mod.RunComplete(
+                    reason="grasp_qualification_complete",
+                    summary={"evaluated_grasps": 5000},
+                )
+            return "obs_1"
+
+    fake_session = FakeSession()
+    monkeypatch.setattr(mod, "EXPORT_POLICY", False, raising=False)
+    monkeypatch.setattr(mod, "parse_checkpoint_path", lambda *args, **kwargs: (checkpoint, run_dir))
+    monkeypatch.setattr(
+        mod,
+        "create_rsl_rl_playback_session",
+        lambda **kwargs: (fake_session, "flat", str(checkpoint)),
+    )
+
+    result = mod.play_rsl_rl(cfg, device="cpu")
+
+    assert result is None
+    assert fake_session.reset_calls == 1
+    assert fake_session.step_calls == 3
 
 
 def test_play_appo_missing_checkpoint_returns_none_without_env(

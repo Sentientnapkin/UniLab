@@ -81,6 +81,13 @@ except ImportError:
     sys.exit(1)
 
 
+def _training_resume_requested(load_run: Any) -> bool:
+    """Return whether ``load_run`` names a checkpoint to resume from."""
+    if load_run is None:
+        return False
+    return str(load_run) not in {"", "-1"}
+
+
 def _backend_adapter(cfg: DictConfig) -> BackendAdapter:
     return BackendAdapter(
         cfg,
@@ -250,6 +257,10 @@ def _resolve_play_num_steps(cfg: DictConfig) -> int | None:
     if play_steps is None:
         return None
     return int(play_steps)
+
+
+def _headless_play_collection_enabled(cfg: DictConfig) -> bool:
+    return bool(OmegaConf.select(cfg, "training.headless_play_collection", default=False))
 
 
 _EE_GOAL_MARKER_RADIUS = 0.025
@@ -436,23 +447,44 @@ def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
 
     try:
         with torch.inference_mode():
-            play_video_path = env.run_playback_mode(
-                play_render_mode=getattr(cfg.training, "play_render_mode", "auto"),
-                play_steps=num_steps,
-                output_video=output_video,
-                render_spacing=float(
-                    getattr(cfg.training, "render_spacing", getattr(env.cfg, "render_spacing", 1.0))
-                ),
-                render_offset_mode=str(getattr(env.cfg, "render_offset_mode", "grid")),
-                initialize=session.reset,
-                step=lambda _obs: session.step_once(),
-                camera_kwargs=camera_cfg_from_training(cfg.training),
-                on_plan=_log_plan,
-                debug_overlay_getter=_playback_debug_overlay_getter(env),
-            )
+            if _headless_play_collection_enabled(cfg):
+                if num_steps is None or num_steps <= 0:
+                    raise ValueError(
+                        "training.headless_play_collection requires a positive "
+                        "training.play_steps safety limit"
+                    )
+                playback_mode = "headless_collection"
+                session.reset()
+                for _ in range(num_steps):
+                    session.step_once()
+            else:
+                play_video_path = env.run_playback_mode(
+                    play_render_mode=getattr(cfg.training, "play_render_mode", "auto"),
+                    play_steps=num_steps,
+                    output_video=output_video,
+                    render_spacing=float(
+                        getattr(
+                            cfg.training,
+                            "render_spacing",
+                            getattr(env.cfg, "render_spacing", 1.0),
+                        )
+                    ),
+                    render_offset_mode=str(getattr(env.cfg, "render_offset_mode", "grid")),
+                    initialize=session.reset,
+                    step=lambda _obs: session.step_once(),
+                    camera_kwargs=camera_cfg_from_training(cfg.training),
+                    on_plan=_log_plan,
+                    debug_overlay_getter=_playback_debug_overlay_getter(env),
+                )
     except RenderClosedError:
         # Interface-level signal: the user closed the backend render window.
         print("Render window closed.")
+    except RunComplete as completion:
+        # Recorders may deliberately finish a bounded play-only collection
+        # before the configured safety-limit step count.
+        print(f"Playback collection completed: {completion.reason}")
+        if completion.summary:
+            print(f"Playback collection summary: {completion.summary}")
     if playback_mode != "none" and num_steps is not None:
         print("Done.")
     return play_video_path
@@ -667,7 +699,7 @@ def main(cfg: DictConfig) -> None:
                     )
                     patch_rsl_rl_action_std_logging(runner)
 
-                    if cfg.algo.load_run != "-1":
+                    if _training_resume_requested(cfg.algo.load_run):
                         resume_path, _ = parse_checkpoint_path(cfg, root_dir=Path.cwd())
                         if resume_path:
                             print(f"Resuming from {resume_path}")
@@ -750,10 +782,13 @@ def main(cfg: DictConfig) -> None:
         if (
             run_completion is None
             and rank == 0
-            and should_run_playback(
-                play_only=cfg.training.play_only,
-                no_play=cfg.training.no_play,
-                play_render_mode=getattr(cfg.training, "play_render_mode", "auto"),
+            and (
+                _headless_play_collection_enabled(cfg)
+                or should_run_playback(
+                    play_only=cfg.training.play_only,
+                    no_play=cfg.training.no_play,
+                    play_render_mode=getattr(cfg.training, "play_render_mode", "auto"),
+                )
             )
         ):
             # torchrun rank variables outlive the training process group. Mask
@@ -769,5 +804,9 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
-    EXPORT_POLICY = True
+    EXPORT_POLICY = os.environ.get("UNILAB_EXPORT_POLICY", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
     main()

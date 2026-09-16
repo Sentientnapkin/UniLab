@@ -1,0 +1,59 @@
+# @package _global_
+# Evaluate every stable-cache row under a frozen rotation policy. This is a
+# play-only owner: it must never be used to update the checkpoint.
+defaults:
+  - /task/leap_inhand_dynamics/mujoco
+  - _self_
+
+training:
+  play_only: true
+  no_play: false
+  play_render_mode: none
+  # `none` normally suppresses playback. This explicit mode instead advances
+  # the frozen policy without initializing a renderer or encoding a video.
+  headless_play_collection: true
+  play_env_num: 64
+  # Three complete 20-second trials over 5k rows require at most 93,750
+  # control steps. The recorder ends the run early as soon as all rows finish.
+  play_steps: 100000
+
+env:
+  actions:
+    hand:
+      action_delay_probability_schedule: [{step: 0, probability: 0.5}]
+      action_noise_std_schedule: [{step: 0, std: 0.01}]
+  events:
+    reset_hand_object:
+      params:
+        grasp_cache_path: caches/leap_cylinder_grasp_diverse_5k.npy
+        grasp_cache_sampling: sequential
+        grasp_cache_start_index: 0
+        randomization_fraction: 0.0
+        joint_noise: 0.0
+        object_xy_noise: 0.0
+        object_z_noise: 0.0
+        object_tilt_noise_deg: 0.0
+        object_velocity_noise: 0.0
+        object_angular_velocity_noise: 0.0
+    cylinder_impulse: null
+  curriculum:
+    start_pose_randomization: null
+  recorders:
+    grasp_qualification:
+      func: unilab.tasks.manipulation.leap_inhand.grasp_qualification.LeapGraspQualificationRecorder
+      params:
+        reset_event_name: reset_hand_object
+        grasp_term_name: dropped
+        rotation_reward_name: rotate
+        input_cache_path: caches/leap_cylinder_grasp_diverse_5k.npy
+        output_prefix: caches/leap_cylinder_grasp_rotation
+        episodes_per_grasp: 3
+        mastered_minimum_survival_fraction: 0.6666667
+        mastered_minimum_frontier_angle: 1.0
+        mastered_minimum_valid_grasp_fraction: 0.50
+        frontier_minimum_survival_fraction: 0.3333333
+        frontier_minimum_frontier_angle: 0.25
+        frontier_minimum_valid_grasp_fraction: 0.25
+        training_cache_size: 5000
+        training_mastered_fraction: 0.30
+        sampling_seed: 1
