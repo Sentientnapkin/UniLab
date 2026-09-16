@@ -226,6 +226,7 @@ class LeapObjectProperties(ManagerTermBase):
             "friction_event_name",
             "com_event_name",
             "pd_event_name",
+            "geometry_event_name",
             "nominal_values",
             "property_ranges",
         }
@@ -250,6 +251,7 @@ class LeapObjectProperties(ManagerTermBase):
         normalize_object_properties(self._nominal[None, :], self._ranges)
         self._action_name = _name(term, "action_name", cfg.params.get("action_name"))
         self._event_names = {
+            "geometry": _name(term, "geometry_event_name", cfg.params.get("geometry_event_name")),
             "mass": _name(term, "mass_event_name", cfg.params.get("mass_event_name")),
             "friction": _name(term, "friction_event_name", cfg.params.get("friction_event_name")),
             "com": _name(term, "com_event_name", cfg.params.get("com_event_name")),
@@ -262,9 +264,18 @@ class LeapObjectProperties(ManagerTermBase):
 
     def raw_values(self, env: ManagerBasedRlEnv) -> np.ndarray:
         values = np.broadcast_to(self._nominal, (env.num_envs, len(PROPERTY_NAMES))).copy()
+        geometry_term = env.event_manager.get_term_cfg(self._event_names["geometry"]).func
+        radius = getattr(geometry_term, "current_radius", None)
+        length = getattr(geometry_term, "current_length", None)
+        if radius is not None and length is not None:
+            values[:, 0] = np.asarray(radius)
+            values[:, 1] = np.asarray(length)
         mass_term = env.event_manager.get_term_cfg(self._event_names["mass"]).func
+        mass = getattr(mass_term, "mass", None)
         scales = getattr(mass_term, "scales", None)
-        if scales is not None:
+        if mass is not None and np.isfinite(mass).all():
+            values[:, 2] = np.asarray(mass)
+        elif scales is not None:
             values[:, 2] = self._nominal[2] * np.asarray(scales)[:, 0]
         friction = getattr(
             env.event_manager.get_term_cfg(self._event_names["friction"]).func,
@@ -412,7 +423,7 @@ class HoraActor(MLPModel):
 
     def _get_latent_dim(self) -> int:
         # Called by MLPModel before the HORA-owned modules are constructed.
-        return self.obs_dim - self.property_dim + self.extrinsics_dim
+        return int(self.obs_dim - self.property_dim + self.extrinsics_dim)
 
     def set_extrinsics_mode(self, mode: str) -> None:
         allowed = {"exact", "zero", "shuffled", "frozen", "predicted"}

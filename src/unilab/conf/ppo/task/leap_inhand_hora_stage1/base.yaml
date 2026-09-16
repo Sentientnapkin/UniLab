@@ -26,6 +26,7 @@ env:
           history_length: 0
           params:
             action_name: hand
+            geometry_event_name: reset_hand_object
             mass_event_name: cylinder_mass_inertia
             friction_event_name: cylinder_friction
             com_event_name: cylinder_com
@@ -77,8 +78,11 @@ env:
       action_noise_std_schedule: [{step: 0, std: 0.0}]
   events:
     reset_hand_object:
+      func: unilab.tasks.manipulation.leap_inhand.hora_grasp.LeapHoraHandObjectReset
       params:
-        grasp_cache_path: caches/leap_cylinder_grasp_diverse_5k.npy
+        grasp_cache_path: caches/hora/leap_precision_grasps_v2.npz
+        cache_splits: [train]
+        object_geom_name: object_visual
         randomization_fraction: 0.0
         joint_noise: 0.0
         object_xy_noise: 0.0
@@ -92,8 +96,10 @@ env:
         kd_range: [0.1, 0.1]
         operation: abs
     cylinder_mass_inertia:
+      func: unilab.tasks.manipulation.leap_inhand.hora_grasp.LeapHoraCylinderMassInertia
       params:
-        scale_range: [1.0, 1.0]
+        geometry_event_name: reset_hand_object
+        density_range: [222.04, 222.04]
     cylinder_friction:
       params:
         ranges: [1.0, 1.0]

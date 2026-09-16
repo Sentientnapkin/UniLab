@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 from pathlib import Path
@@ -28,7 +29,9 @@ def build_case_overrides(
     checkpoint: str = "-1",
 ) -> list[str]:
     """Translate one manifest row into fixed Hydra environment overrides."""
-    if case["cylinder_radius"] != 0.032 or case["cylinder_length"] != 0.070:
+    if policy_family != "hora" and (
+        case["cylinder_radius"] != 0.032 or case["cylinder_length"] != 0.070
+    ):
         raise ValueError(
             "the current LEAP scene supports only radius=0.032 m and length=0.070 m; "
             "geometry-aware scene materialization belongs to Phase 1"
@@ -54,14 +57,12 @@ def build_case_overrides(
         "+env.events.reset_hand_object.params.grasp_cache_sampling=sequential",
         f"+env.events.reset_hand_object.params.grasp_cache_start_index={case['grasp_index']}",
         "env.events.reset_hand_object.params.randomization_fraction=0.0",
-        "env.events.reset_hand_object.params.grasp_cache_path=caches/leap_cylinder_grasp_diverse_5k.npy",
         "env.events.reset_hand_object.params.joint_noise=0.0",
         "env.events.reset_hand_object.params.object_xy_noise=0.0",
         "env.events.reset_hand_object.params.object_z_noise=0.0",
         "env.events.reset_hand_object.params.object_tilt_noise_deg=0.0",
         "env.events.reset_hand_object.params.object_velocity_noise=0.0",
         "env.events.reset_hand_object.params.object_angular_velocity_noise=0.0",
-        f"env.events.cylinder_mass_inertia.params.scale_range=[{_scalar(case['object_mass'] / 0.05)},{_scalar(case['object_mass'] / 0.05)}]",
         f"env.events.cylinder_friction.params.ranges=[{_scalar(case['sliding_friction'])},{_scalar(case['sliding_friction'])}]",
         f"env.events.cylinder_com.params.com_range.x=[{com[0]},{com[0]}]",
         f"env.events.cylinder_com.params.com_range.y=[{com[1]},{com[1]}]",
@@ -82,8 +83,17 @@ def build_case_overrides(
         "++env.recorders.evaluation.params.action_name=hand",
     ]
     if policy_family == "hora":
+        density = case["object_mass"] / (
+            math.pi * case["cylinder_radius"] ** 2 * case["cylinder_length"]
+        )
         overrides.extend(
             (
+                "env.events.reset_hand_object.params.grasp_cache_path=caches/hora/leap_precision_grasps_v2.npz",
+                "env.events.reset_hand_object.params.cache_splits=[train,validation,held_out]",
+                "+env.events.reset_hand_object.params.cylinder_geometry_override="
+                f"[{_scalar(case['cylinder_radius'])},{_scalar(case['cylinder_length'])}]",
+                "env.events.cylinder_mass_inertia.params.density_range="
+                f"[{_scalar(density)},{_scalar(density)}]",
                 f"env.actions.hand.latency_steps_range=[{case['action_delay_steps']},{case['action_delay_steps']}]",
                 f"env.actions.hand.action_noise_std_schedule=[{{step:0,std:{_scalar(case['action_noise_std'])}}}]",
                 f"env.observations.actor.terms.hardware.params.joint_noise={_scalar(case['observation_noise_std'])}",
@@ -91,8 +101,12 @@ def build_case_overrides(
         )
     else:
         delay_probability = float(case["action_delay_steps"])
+        mass_scale = case["object_mass"] / 0.05
         overrides.extend(
             (
+                "env.events.reset_hand_object.params.grasp_cache_path=caches/leap_cylinder_grasp_diverse_5k.npy",
+                "env.events.cylinder_mass_inertia.params.scale_range="
+                f"[{_scalar(mass_scale)},{_scalar(mass_scale)}]",
                 f"env.actions.hand.action_delay_probability_schedule=[{{step:0,probability:{_scalar(delay_probability)}}}]",
                 f"env.actions.hand.action_noise_std_schedule=[{{step:0,std:{_scalar(case['action_noise_std'])}}}]",
                 f"env.observations.actor.terms.proprio.params.joint_noise={_scalar(case['observation_noise_std'])}",

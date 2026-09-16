@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -21,6 +22,12 @@ from unilab.tasks.manipulation.leap_inhand.hora import (
     PROPERTY_NAMES,
     HoraActor,
     normalize_object_properties,
+)
+from unilab.tasks.manipulation.leap_inhand.hora_grasp import (
+    HORA_GRASP_CACHE_SCHEMA_VERSION,
+    HoraGraspCache,
+    LeapHoraCylinderMassInertia,
+    LeapHoraHandObjectReset,
 )
 
 _ROOT = Path(__file__).parents[2]
@@ -62,6 +69,138 @@ def test_hora_owner_isolated_from_gait_baseline() -> None:
     assert hora.algo.algorithm.enable_compile is False
     assert hora.reward.retained.weight == 0.0
     assert hora.reward.thumb_contact.weight == 0.0
+
+
+def test_hora_grasp_owner_has_geometry_families_and_v2_output() -> None:
+    from unilab.base import registry
+    from unilab.training import ensure_registries
+
+    ensure_registries()
+    assert registry.list_registered_envs()["LeapInhandHoraGrasp"] == {
+        "config_factory": "ManagerBasedRlEnvCfg",
+        "available_backends": ["mujoco"],
+    }
+    cfg = _ppo_cfg("leap_inhand_hora_grasp")
+    reset = cfg.env.events.reset_hand_object
+    recorder = cfg.env.recorders.grasp_cache.params
+    assert reset.func.endswith("LeapHoraHandObjectReset")
+    assert len(reset.params.cylinder_geometries) == 3
+    assert len(reset.params.canonical_families) == 5
+    assert {family.split for family in reset.params.canonical_families} == {
+        "train",
+        "validation",
+        "held_out",
+    }
+    assert cfg.env.events.cylinder_mass_inertia.func.endswith("LeapHoraCylinderMassInertia")
+    assert recorder.output_path.startswith("caches/hora/")
+    assert recorder.output_path.endswith(".npz")
+    assert recorder.validation_trials == 3
+
+
+def test_hora_grasp_cache_v2_round_trip_and_family_split(tmp_path: Path) -> None:
+    count = 3
+    quat = np.zeros((count, 4), dtype=np.float32)
+    quat[:, 0] = 1.0
+    cache = HoraGraspCache(
+        joint_pos=np.arange(count * 16, dtype=np.float32).reshape(count, 16) / 100.0,
+        object_pos=np.zeros((count, 3), dtype=np.float32),
+        object_quat=quat,
+        cylinder_radius=np.asarray([0.028, 0.032, 0.036], dtype=np.float32),
+        cylinder_length=np.asarray([0.060, 0.070, 0.080], dtype=np.float32),
+        family_id=np.asarray([0, 0, 1], dtype=np.int16),
+        split=np.asarray([0, 0, 2], dtype=np.int8),
+        validation_trials=np.full(count, 3, dtype=np.int16),
+        mass_min=np.asarray([0.03, 0.04, 0.05], dtype=np.float32),
+        mass_max=np.asarray([0.05, 0.06, 0.08], dtype=np.float32),
+        sliding_friction_min=np.asarray([0.7, 0.8, 0.9], dtype=np.float32),
+        sliding_friction_max=np.asarray([1.1, 1.2, 1.3], dtype=np.float32),
+        family_names=("train_family", "held_out_family"),
+    )
+    path = tmp_path / "hora_v2.npz"
+    cache.save(path)
+    loaded = HoraGraspCache.load(path)
+    assert HORA_GRASP_CACHE_SCHEMA_VERSION == 2
+    assert loaded.family_names == cache.family_names
+    np.testing.assert_array_equal(loaded.state_rows, cache.state_rows)
+    train = loaded.select(["train"])
+    assert train.size == 2
+    np.testing.assert_array_equal(train.family_id, 0)
+    held_out = loaded.select(["held_out"])
+    assert held_out.size == 1
+    np.testing.assert_array_equal(held_out.family_id, 1)
+
+    invalid = dict(cache.__dict__)
+    invalid["split"] = np.asarray([0, 1, 2], dtype=np.int8)
+    with pytest.raises(ValueError, match="family must belong to exactly one split"):
+        HoraGraspCache(**invalid)
+
+
+def test_hora_candidate_repeats_until_all_validation_trials_pass() -> None:
+    reset = object.__new__(LeapHoraHandObjectReset)
+    reset.validation_passes = np.zeros(2, dtype=np.int16)
+    reset._repeat_candidate = np.zeros(2, dtype=np.bool_)
+    reset._candidate_rows = np.zeros((2, 23), dtype=np.float64)
+    reset._candidate_rows[:, 19] = 1.0
+    ids = np.asarray([0, 1], dtype=np.int32)
+    settled = np.ones((2, 23), dtype=np.float64)
+    settled[:, 19:23] = (1.0, 0.0, 0.0, 0.0)
+
+    accepted = reset.record_validation_results(ids, np.asarray([True, False]), settled, 2)
+    np.testing.assert_array_equal(accepted, [False, False])
+    np.testing.assert_array_equal(reset._repeat_candidate, [True, False])
+    np.testing.assert_array_equal(reset.validation_passes, [1, 0])
+    np.testing.assert_array_equal(reset._candidate_rows[0], settled[0])
+
+    accepted = reset.record_validation_results(ids, np.asarray([True, True]), settled, 2)
+    np.testing.assert_array_equal(accepted, [True, False])
+    np.testing.assert_array_equal(reset._repeat_candidate, [False, True])
+    np.testing.assert_array_equal(reset.validation_passes, [2, 1])
+
+
+def test_hora_cylinder_mass_and_inertia_follow_sampled_geometry() -> None:
+    from types import SimpleNamespace
+
+    written: dict[str, np.ndarray] = {}
+    geometry = object.__new__(LeapHoraHandObjectReset)
+    geometry.current_radius = np.asarray([0.03, 0.04], dtype=np.float32)
+    geometry.current_length = np.asarray([0.06, 0.08], dtype=np.float32)
+    entity = SimpleNamespace(
+        write_body_mass_to_sim=lambda values, body_ids, env_ids, term_name: written.update(
+            mass=values.copy()
+        ),
+        write_body_inertia_to_sim=lambda values, body_ids, env_ids, term_name: written.update(
+            inertia=values.copy()
+        ),
+    )
+    env = SimpleNamespace(
+        num_envs=2,
+        rng=np.random.default_rng(7),
+        event_manager=SimpleNamespace(
+            get_term_cfg=lambda name: SimpleNamespace(func=geometry)
+        ),
+    )
+    term = object.__new__(LeapHoraCylinderMassInertia)
+    term._geometry_event_name = "reset_hand_object"
+    term._density_range = (200.0, 200.0)
+    term._entity = entity
+    term._body_ids = np.asarray([0], dtype=np.int32)
+    term.mass = np.full(2, np.nan, dtype=np.float32)
+    term.density = np.full(2, np.nan, dtype=np.float32)
+
+    term(cast(Any, env), np.asarray([0, 1], dtype=np.int32))
+
+    expected_mass = 200.0 * np.pi * np.square(geometry.current_radius) * geometry.current_length
+    np.testing.assert_allclose(written["mass"][:, 0], expected_mass)
+    transverse = expected_mass * (
+        3.0 * np.square(geometry.current_radius) + np.square(geometry.current_length)
+    ) / 12.0
+    axial = 0.5 * expected_mass * np.square(geometry.current_radius)
+    np.testing.assert_allclose(
+        written["inertia"][:, 0, :2],
+        np.repeat(transverse[:, None], 2, axis=1),
+        rtol=1.0e-6,
+    )
+    np.testing.assert_allclose(written["inertia"][:, 0, 2], axial, rtol=1.0e-6)
 
 
 def test_hora_actor_jointly_updates_encoder_and_supports_ablations() -> None:
@@ -132,6 +271,12 @@ def test_evaluation_manifest_and_report_summary(tmp_path: Path) -> None:
     overrides = build_case_overrides(case, tmp_path / "episode.json", policy_family="hora")
     assert "training.play_steps=400" in overrides
     assert "env.actions.hand.latency_steps_range=[0,0]" in overrides
+    assert (
+        "env.events.reset_hand_object.params.grasp_cache_path="
+        "caches/hora/leap_precision_grasps_v2.npz"
+    ) in overrides
+    assert any("cylinder_geometry_override" in item for item in overrides)
+    assert any("density_range" in item for item in overrides)
     assert any(item.startswith("++env.recorders.evaluation.func=") for item in overrides)
 
     metric_names = (

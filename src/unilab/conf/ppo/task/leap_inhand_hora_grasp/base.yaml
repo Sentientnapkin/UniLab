@@ -1,0 +1,153 @@
+# @package _global_
+# HORA precision-grasp generation. Candidate families and geometry remain
+# explicit here so cache schema v2 preserves their association and split.
+defaults:
+  - /task/leap_inhand/base
+  - _self_
+
+env:
+  max_episode_seconds: 2.0
+  actions:
+    hand:
+      _target_: unilab.tasks.manipulation.leap_inhand.grasp_gen.LeapGraspHoldActionCfg
+      action_scale: 0.0
+      reset_target_from_joint_state: true
+      gait_amplitude_schedule: [{step: 0, amplitude: 0.0}]
+      thumb_gait_amplitude: 0.0
+      thumb_policy_target_offset_limit: null
+      thumb_target_return_time_constant: null
+      opposing_finger_policy_target_offset_limit: null
+      opposing_finger_target_return_time_constant: null
+      action_delay_probability_schedule: [{step: 0, probability: 0.0}]
+      action_noise_std_schedule: [{step: 0, std: 0.0}]
+  events:
+    reset_hand_object:
+      func: unilab.tasks.manipulation.leap_inhand.hora_grasp.LeapHoraHandObjectReset
+      params:
+        entity_name: robot
+        grasp_cache_path: null
+        object_geom_name: object_visual
+        cylinder_geometries:
+          - [0.028, 0.060]
+          - [0.032, 0.070]
+          - [0.036, 0.080]
+        # Families are hypotheses, not validated poses. The recorder promotes
+        # only candidates surviving repeated randomized-physics trials.
+        canonical_families:
+          - name: balanced_thumb_index_middle
+            split: train
+            joint_pos: [1.2755, -0.2303, 0.6546, -0.0045,
+                        0.9683, -0.1478, 0.7725, -0.0411,
+                        1.3694, -0.2130, 0.6058, 0.3137,
+                        0.4400, 1.5114, 1.5552, -0.1003]
+            object_pos: [-0.03370, 0.02378, 0.252]
+            object_quat: [0.99931, 0.00665, -0.00592, 0.03605]
+          - name: index_forward_load
+            split: train
+            joint_pos: [1.2255, -0.1803, 0.7046, 0.0155,
+                        1.0183, -0.1678, 0.7425, -0.0211,
+                        1.3994, -0.2430, 0.5758, 0.2837,
+                        0.4700, 1.4614, 1.5252, -0.0703]
+            object_pos: [-0.03470, 0.02178, 0.252]
+            object_quat: [0.99931, 0.00665, -0.00592, 0.03605]
+          - name: outer_finger_load
+            split: train
+            joint_pos: [1.3255, -0.2503, 0.6246, -0.0245,
+                        0.9383, -0.1178, 0.8025, -0.0611,
+                        1.3194, -0.1630, 0.6658, 0.3437,
+                        0.4100, 1.5414, 1.5752, -0.1203]
+            object_pos: [-0.03270, 0.02578, 0.252]
+            object_quat: [0.99931, 0.00665, -0.00592, 0.03605]
+          - name: high_thumb_opposition
+            split: validation
+            joint_pos: [1.2855, -0.2103, 0.6746, 0.0055,
+                        0.9883, -0.1378, 0.7825, -0.0311,
+                        1.3494, -0.1930, 0.6258, 0.3037,
+                        0.3900, 1.5614, 1.5952, -0.0503]
+            object_pos: [-0.03370, 0.02378, 0.254]
+            object_quat: [0.99931, 0.00665, -0.00592, 0.03605]
+          - name: distal_outer_opposition
+            split: held_out
+            joint_pos: [1.3055, -0.2603, 0.6146, 0.0255,
+                        0.9483, -0.1078, 0.8225, -0.0111,
+                        1.2894, -0.1430, 0.6958, 0.3637,
+                        0.4800, 1.4314, 1.5052, -0.1303]
+            object_pos: [-0.03170, 0.02678, 0.251]
+            object_quat: [0.99931, 0.00665, -0.00592, 0.03605]
+        candidate_joint_noise: 0.10
+        candidate_object_xy_noise: 0.005
+        candidate_object_z_noise: 0.003
+        candidate_object_tilt_noise_deg: 10.0
+        # Per-trial perturbations stay zero: a candidate is sampled once, then
+        # replayed exactly while physics changes across validation trials.
+        randomization_fraction: 0.0
+        joint_noise: 0.0
+        object_xy_noise: 0.0
+        object_z_noise: 0.0
+        object_tilt_noise_deg: 0.0
+        object_velocity_noise: 0.0
+        object_angular_velocity_noise: 0.0
+        object_z_offset: 0.0
+    pd_gains:
+      params:
+        kp_range: [1.0, 1.0]
+        kd_range: [0.1, 0.1]
+        operation: abs
+    cylinder_mass_inertia:
+      func: unilab.tasks.manipulation.leap_inhand.hora_grasp.LeapHoraCylinderMassInertia
+      mode: reset
+      params:
+        asset_cfg:
+          _target_: unilab.managers.SceneEntityCfg
+          name: robot
+          body_names: object
+        geometry_event_name: reset_hand_object
+        density_range: [150.0, 350.0]
+    cylinder_friction:
+      params:
+        ranges: [0.70, 1.40]
+        operation: scale
+        axes: [0]
+        shared_random: true
+    encoder_bias:
+      params: {bias_range: [0.0, 0.0]}
+  terminations:
+    invalid_grasp:
+      func: unilab.tasks.manipulation.leap_inhand.grasp_gen.LeapGraspQualityTermination
+      params:
+        state_term_name: dropped
+        minimum_validation_seconds: 1.5
+        maximum_linear_speed: 0.02
+        maximum_angular_speed: 0.20
+        enabled: true
+  recorders:
+    grasp_cache:
+      func: unilab.tasks.manipulation.leap_inhand.hora_grasp.LeapHoraGraspRecorder
+      params:
+        reset_event_name: reset_hand_object
+        quality_term_name: invalid_grasp
+        mass_event_name: cylinder_mass_inertia
+        friction_event_name: cylinder_friction
+        output_path: caches/hora/leap_precision_grasps_v2.npz
+        collection_target: 10000
+        validation_trials: 3
+        auto_save: true
+        joint_limit_margin_fraction: 0.02
+        minimum_joint_rms_rad: 0.01
+        minimum_position_distance_m: 0.001
+        minimum_axis_angle_deg: 2.0
+        geometry_tolerance_m: 0.0001
+  curriculum:
+    start_pose_randomization: null
+
+reward:
+  rotate: {weight: 0.0}
+  retained: {weight: 0.0}
+  palm_support: {weight: 0.0}
+  thumb_contact: {weight: 0.0}
+  completed: {weight: 0.0}
+  obj_linvel: {weight: 0.0}
+  pose_diff: {weight: 0.0}
+  torque: {weight: 0.0}
+  work: {weight: 0.0}
+  drop: {weight: 0.0}
