@@ -128,6 +128,14 @@ env:
         quality_term_name: invalid_grasp
         mass_event_name: cylinder_mass_inertia
         friction_event_name: cylinder_friction
+        self_collision_sensor_names:
+          - if_mf_self_contact
+          - if_rf_self_contact
+          - mf_rf_self_contact
+          - th_if_self_contact
+          - th_mf_self_contact
+          - th_rf_self_contact
+        self_collision_threshold: 0.0
         output_path: caches/hora/leap_precision_grasps_v2.npz
         collection_target: 10000
         validation_trials: 3

@@ -15,6 +15,7 @@ from typing import Any
 import gymnasium as gym
 import numpy as np
 from unisim.backend.base import DebugOverlayGetter, DebugPrimitive, SimBackend
+from unisim.dr.types import InitRandomizationPlan
 
 from unilab.base.backend_factory import create_backend, env_backend_kwargs
 from unilab.base.base import EnvCfg
@@ -764,6 +765,8 @@ def make_manager_based_rl_env(
     cfg: ManagerBasedRlEnvCfg,
     num_envs: int = 1,
     backend_type: str = "mujoco",
+    *,
+    init_randomization_plan: InitRandomizationPlan | None = None,
 ) -> ManagerBasedRlEnv:
     """Construct the generic Registry-owned Manager-Based production runtime."""
     if not isinstance(cfg, ManagerBasedRlEnvCfg):
@@ -799,6 +802,8 @@ def make_manager_based_rl_env(
         **backend_kwargs,
     )
     try:
+        if init_randomization_plan is not None and not init_randomization_plan.is_empty():
+            backend.apply_init_randomization(init_randomization_plan)
         return ManagerBasedRlEnv(cfg, backend, num_envs)
     except Exception:
         backend.cleanup_scene_assets()

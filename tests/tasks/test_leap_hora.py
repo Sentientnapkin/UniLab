@@ -14,6 +14,7 @@ from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from tensordict import TensorDict
 
+from unilab.base.config_adapter import BackendAdapter
 from unilab.base.run_control import RunComplete
 from unilab.scripts import generate_leap_hora_grasps
 from unilab.scripts.evaluate_leap_inhand import build_case_overrides
@@ -39,6 +40,7 @@ from unilab.tasks.manipulation.leap_inhand.hora_grasp import (
     LeapHoraCylinderMassInertia,
     LeapHoraGraspRecorder,
     LeapHoraHandObjectReset,
+    make_leap_hora_env,
 )
 
 _ROOT = Path(__file__).parents[2]
@@ -106,6 +108,28 @@ def test_hora_grasp_owner_has_geometry_families_and_v2_output() -> None:
     assert recorder.output_path.startswith("caches/hora/")
     assert recorder.output_path.endswith(".npz")
     assert recorder.validation_trials == 3
+    assert tuple(recorder.self_collision_sensor_names) == (
+        "if_mf_self_contact",
+        "if_rf_self_contact",
+        "mf_rf_self_contact",
+        "th_if_self_contact",
+        "th_mf_self_contact",
+        "th_rf_self_contact",
+    )
+
+
+def test_hora_grasp_self_collision_rejection_reads_named_sensor_view() -> None:
+    recorder = object.__new__(LeapHoraGraspRecorder)
+    recorder._env = SimpleNamespace(num_envs=3)
+    recorder._self_collision_sensor_names = ("if_mf", "th_if")
+    recorder._self_collision_threshold = 0.0
+    recorder._self_collision_view = SimpleNamespace(
+        read=lambda: np.asarray([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+    )
+
+    collision = recorder._self_collision(np.asarray([0, 2], dtype=np.intp))
+
+    np.testing.assert_array_equal(collision, [False, True])
 
 
 def test_hora_grasp_collection_command_composes_without_backend(
@@ -140,6 +164,39 @@ def test_hora_grasp_collection_command_composes_without_backend(
     described = json.loads(capsys.readouterr().out)["collection_plan"]
     assert described["schema_version"] == 2
     assert described["collection_target"] == 8
+
+
+def test_hora_factory_assigns_compiled_geometry_variants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = SimpleNamespace(
+        events={
+            "reset_hand_object": SimpleNamespace(
+                params={
+                    "object_geom_name": "object_visual",
+                    "cylinder_geometries": ((0.028, 0.060), (0.032, 0.070), (0.036, 0.080)),
+                }
+            )
+        }
+    )
+    captured: dict[str, Any] = {}
+
+    def fake_make(cfg: Any, **kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "env"
+
+    monkeypatch.setattr(
+        "unilab.tasks.manipulation.leap_inhand.hora_grasp.make_manager_based_rl_env",
+        fake_make,
+    )
+
+    result = make_leap_hora_env(cast(Any, cfg), num_envs=5, backend_type="mujoco")
+
+    assert result == "env"
+    plan = captured["init_randomization_plan"]
+    np.testing.assert_array_equal(plan.model_assignments, [0, 1, 2, 0, 1])
+    sizes = [variant.geom_size_overrides[0].size for variant in plan.model_variants]
+    assert sizes == [(0.028, 0.03, 0.0), (0.032, 0.035, 0.0), (0.036, 0.04, 0.0)]
 
 
 def test_hora_grasp_collection_loop_uses_zero_actions_and_run_complete(
@@ -182,9 +239,7 @@ def test_hora_grasp_collection_loop_uses_zero_actions_and_run_complete(
 
     fake_env = FakeEnv()
     monkeypatch.setattr(generate_leap_hora_grasps, "BackendAdapter", FakeAdapter)
-    monkeypatch.setattr(
-        generate_leap_hora_grasps, "create_env", lambda *args, **kwargs: fake_env
-    )
+    monkeypatch.setattr(generate_leap_hora_grasps, "create_env", lambda *args, **kwargs: fake_env)
 
     summary = generate_leap_hora_grasps.run_collection(cfg, max_control_steps=10)
 
@@ -287,9 +342,7 @@ def test_hora_cylinder_mass_and_inertia_follow_sampled_geometry() -> None:
     env = SimpleNamespace(
         num_envs=2,
         rng=np.random.default_rng(7),
-        event_manager=SimpleNamespace(
-            get_term_cfg=lambda name: SimpleNamespace(func=geometry)
-        ),
+        event_manager=SimpleNamespace(get_term_cfg=lambda name: SimpleNamespace(func=geometry)),
     )
     term = object.__new__(LeapHoraCylinderMassInertia)
     term._geometry_event_name = "reset_hand_object"
@@ -303,9 +356,11 @@ def test_hora_cylinder_mass_and_inertia_follow_sampled_geometry() -> None:
 
     expected_mass = 200.0 * np.pi * np.square(geometry.current_radius) * geometry.current_length
     np.testing.assert_allclose(written["mass"][:, 0], expected_mass)
-    transverse = expected_mass * (
-        3.0 * np.square(geometry.current_radius) + np.square(geometry.current_length)
-    ) / 12.0
+    transverse = (
+        expected_mass
+        * (3.0 * np.square(geometry.current_radius) + np.square(geometry.current_length))
+        / 12.0
+    )
     axial = 0.5 * expected_mass * np.square(geometry.current_radius)
     np.testing.assert_allclose(
         written["inertia"][:, 0, :2],
@@ -422,6 +477,33 @@ def test_evaluation_manifest_and_report_summary(tmp_path: Path) -> None:
     invalid_path.write_text(json.dumps(invalid), encoding="utf-8")
     with pytest.raises(ValueError, match="fields mismatch"):
         load_evaluation_manifest(invalid_path)
+
+
+@pytest.mark.slow
+def test_hora_mujoco_compiles_geometry_variants() -> None:
+    mujoco = pytest.importorskip("mujoco")
+    from unilab.base import registry
+    from unilab.training import ensure_registries
+
+    cfg = _ppo_cfg("leap_inhand_hora_grasp")
+    ensure_registries()
+    env = registry.make(
+        "LeapInhandHoraGrasp",
+        num_envs=3,
+        sim_backend="mujoco",
+        env_cfg_override=BackendAdapter(
+            cfg, root_dir=_ROOT, algo_name="ppo"
+        ).build_task_env_cfg_override(),
+    )
+    try:
+        sizes = []
+        for env_index in range(3):
+            model = env.get_playback_model(env_index)
+            geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "object_visual")
+            sizes.append(model.geom_size[geom_id, :2])
+        np.testing.assert_allclose(sizes, [[0.028, 0.030], [0.032, 0.035], [0.036, 0.040]])
+    finally:
+        env.close()
 
 
 @pytest.mark.slow

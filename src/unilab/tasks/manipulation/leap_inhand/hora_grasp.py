@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import numpy as np
+from unisim.dr.types import GeomSizeOverride, InitRandomizationPlan, ModelVariantSpec
 
 from unilab.assets import ASSETS_ROOT_PATH
 from unilab.base import registry
@@ -29,7 +30,7 @@ from .manager_terms import LeapHandObjectReset, _env_ids
 
 if TYPE_CHECKING:
     from unilab.base.entity import Entity
-    from unilab.managers._types import ManagerBasedRlEnv
+    from unilab.managers._types import ManagerBasedRlEnv, ManagerSensorView
 
     class _HoraGraspEnv(ManagerBasedRlEnv, Protocol):
         @property
@@ -85,6 +86,64 @@ def _pair(term: str, field: str, value: Any) -> tuple[float, float]:
 def _asset_path(value: str) -> Path:
     path = Path(value)
     return path if path.is_absolute() else Path(ASSETS_ROOT_PATH) / path
+
+
+def _names(term: str, field: str, value: Any) -> tuple[str, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence) or not value:
+        raise TypeError(f"{term} {field} must be a non-empty sequence")
+    names = tuple(value)
+    if any(not isinstance(name, str) or not name for name in names):
+        raise ValueError(f"{term} {field} must contain non-empty strings")
+    if len(set(names)) != len(names):
+        raise ValueError(f"{term} {field} must not contain duplicates")
+    return names
+
+
+def _configured_geometries(params: Mapping[str, Any]) -> np.ndarray:
+    override = params.get("cylinder_geometry_override")
+    if override is not None:
+        return np.asarray([_pair("LeapHora", "cylinder_geometry_override", override)])
+    configured = LeapHoraHandObjectReset._parse_geometries(params.get("cylinder_geometries"))
+    if configured.size:
+        return configured
+    cache_value = params.get("grasp_cache_path")
+    if cache_value is None:
+        raise ValueError("HORA environment requires cylinder geometry configuration")
+    cache = HoraGraspCache.load(_asset_path(_name("LeapHora", "grasp_cache_path", cache_value)))
+    pairs = np.stack((cache.cylinder_radius, cache.cylinder_length), axis=1)
+    return np.unique(np.round(pairs.astype(np.float64), decimals=8), axis=0)
+
+
+def make_leap_hora_env(
+    cfg: ManagerBasedRlEnvCfg,
+    num_envs: int = 1,
+    backend_type: str = "mujoco",
+):
+    """Materialize fixed per-env cylinder geometry variants before MuJoCo starts."""
+    if backend_type != "mujoco":
+        raise NotImplementedError("HORA cylinder model variants currently require MuJoCo")
+    reset_cfg = cfg.events.get("reset_hand_object")
+    if reset_cfg is None:
+        raise ValueError("HORA environment requires reset_hand_object")
+    params = reset_cfg.params
+    geometries = _configured_geometries(params)
+    geom_name = _name("LeapHora", "object_geom_name", params.get("object_geom_name"))
+    variants = tuple(
+        ModelVariantSpec(
+            geom_size_overrides=(
+                GeomSizeOverride(geom_name, (float(radius), float(length) / 2.0, 0.0)),
+            )
+        )
+        for radius, length in geometries
+    )
+    assignments = np.arange(num_envs, dtype=np.int32) % len(variants)
+    plan = InitRandomizationPlan(model_assignments=assignments, model_variants=variants)
+    return make_manager_based_rl_env(
+        cfg,
+        num_envs=num_envs,
+        backend_type=backend_type,
+        init_randomization_plan=plan,
+    )
 
 
 @dataclass(frozen=True)
@@ -335,15 +394,7 @@ class LeapHoraHandObjectReset(LeapHandObjectReset):
                 original.get("candidate_object_tilt_noise_deg", 0.0),
             )
         )
-        entity = cast("Entity", self._entity)
-        geom_name = _name(term, "object_geom_name", original.get("object_geom_name"))
-        geom_ids, names = entity.find_geoms(geom_name, preserve_order=True)
-        if len(geom_ids) != 1:
-            raise ValueError(f"{term} expected one object geom {geom_name!r}, got {names}")
-        self._object_geom_ids, defaults = entity.bind_geom_size_write(
-            geom_ids, term_name="hora_cylinder_geometry"
-        )
-        self._default_geom_size = np.asarray(defaults[0], dtype=np.float64)
+        self._assigned_geometries = _configured_geometries(original)
 
         dtype = get_global_dtype()
         self.current_radius = np.zeros(env.num_envs, dtype=dtype)
@@ -413,15 +464,27 @@ class LeapHoraHandObjectReset(LeapHandObjectReset):
     def family_names(self) -> tuple[str, ...]:
         return self._hora_cache.family_names if self._hora_cache is not None else self._family_names
 
-    def _sample_cache_indices(self, env: ManagerBasedRlEnv, count: int) -> np.ndarray:
-        if self._requested_sampling == "random":
-            positions = env.rng.integers(0, self._eligible_cache_indices.size, size=count)
-        else:
-            positions = (np.arange(count) + self._cache_cursor) % self._eligible_cache_indices.size
-            self._cache_cursor = int(
-                (self._cache_cursor + count) % self._eligible_cache_indices.size
-            )
-        return self._eligible_cache_indices[positions]
+    def _sample_cache_indices(self, env: ManagerBasedRlEnv, ids: np.ndarray) -> np.ndarray:
+        assert self._hora_cache is not None
+        selected = np.empty(ids.size, dtype=np.int64)
+        for local, env_id in enumerate(ids):
+            radius, length = self._assigned_geometries[env_id % len(self._assigned_geometries)]
+            eligible = self._eligible_cache_indices[
+                np.isclose(self._hora_cache.cylinder_radius[self._eligible_cache_indices], radius)
+                & np.isclose(self._hora_cache.cylinder_length[self._eligible_cache_indices], length)
+            ]
+            if not eligible.size:
+                raise ValueError(
+                    "HORA grasp cache has no eligible row for assigned geometry "
+                    f"radius={radius}, length={length}"
+                )
+            if self._requested_sampling == "random":
+                position = int(env.rng.integers(0, eligible.size))
+            else:
+                position = self._cache_cursor % eligible.size
+                self._cache_cursor += 1
+            selected[local] = eligible[position]
+        return selected
 
     def _new_candidates(self, env: ManagerBasedRlEnv, ids: np.ndarray) -> None:
         count = ids.size
@@ -431,7 +494,7 @@ class LeapHoraHandObjectReset(LeapHandObjectReset):
         )
         self._next_candidate_id += count
         if self._hora_cache is not None:
-            indices = self._sample_cache_indices(env, count)
+            indices = self._sample_cache_indices(env, ids)
             cache = self._hora_cache
             self._candidate_rows[ids] = cache.state_rows[indices]
             self.current_radius[ids] = cache.cylinder_radius[indices]
@@ -445,7 +508,6 @@ class LeapHoraHandObjectReset(LeapHandObjectReset):
             return
 
         family = env.rng.integers(0, len(self._family_names), size=count)
-        geometry = env.rng.integers(0, self._geometries.shape[0], size=count)
         rows = self._family_rows[family].copy()
         if self._candidate_joint_noise:
             rows[:, :16] += env.rng.uniform(
@@ -466,8 +528,9 @@ class LeapHoraHandObjectReset(LeapHandObjectReset):
             rows[:, 19:23] = np_quat_mul(rows[:, 19:23], np_quat_from_angle_axis(angles, axes))
         np.clip(rows[:, :16], self._ctrl_lower, self._ctrl_upper, out=rows[:, :16])
         self._candidate_rows[ids] = rows
-        self.current_radius[ids] = self._geometries[geometry, 0]
-        self.current_length[ids] = self._geometries[geometry, 1]
+        geometry = self._assigned_geometries[ids % len(self._assigned_geometries)]
+        self.current_radius[ids] = geometry[:, 0]
+        self.current_length[ids] = geometry[:, 1]
         self.current_family_id[ids] = family
         self.current_split[ids] = self._family_split[family]
         if self._geometry_override is not None:
@@ -524,16 +587,6 @@ class LeapHoraHandObjectReset(LeapHandObjectReset):
             self._grasp_cache_sampling = saved_sampling
             self._grasp_cache_cursor = saved_cursor
 
-        sizes = np.broadcast_to(self._default_geom_size, (ids.size, 1, 3)).copy()
-        sizes[:, 0, 0] = self.current_radius[ids]
-        sizes[:, 0, 1] = self.current_length[ids] / 2.0
-        cast("Entity", self._entity).write_geom_size_to_sim(
-            sizes,
-            geom_ids=self._object_geom_ids,
-            env_ids=ids,
-            term_name="hora_cylinder_geometry",
-        )
-
 
 class LeapHoraCylinderMassInertia(ManagerTermBase):
     """Sample mass and exact solid-cylinder inertia for the active geometry."""
@@ -541,7 +594,9 @@ class LeapHoraCylinderMassInertia(ManagerTermBase):
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv):
         super().__init__(env)
         term = type(self).__name__
-        allowed = {"asset_cfg", "geometry_event_name", "density_range"}
+        # ``scale_range`` is inherited from the gait owner's replaced mass
+        # event.  Density is authoritative for HORA, so accept but ignore it.
+        allowed = {"asset_cfg", "geometry_event_name", "density_range", "scale_range"}
         unexpected = set(cfg.params) - allowed
         if unexpected:
             raise TypeError(f"{term} received unsupported parameters: {sorted(unexpected)}")
@@ -618,6 +673,8 @@ class LeapHoraGraspRecorder(RecorderTerm):
             "quality_term_name",
             "mass_event_name",
             "friction_event_name",
+            "self_collision_sensor_names",
+            "self_collision_threshold",
             "output_path",
             "collection_target",
             "validation_trials",
@@ -650,6 +707,25 @@ class LeapHoraGraspRecorder(RecorderTerm):
         self._friction_event_name = _name(
             term, "friction_event_name", cfg.params.get("friction_event_name")
         )
+        self._self_collision_sensor_names = _names(
+            term,
+            "self_collision_sensor_names",
+            cfg.params.get("self_collision_sensor_names"),
+        )
+        self._self_collision_threshold = _nonnegative(
+            term,
+            "self_collision_threshold",
+            cfg.params.get("self_collision_threshold", 0.0),
+        )
+        self._self_collision_view: ManagerSensorView = env.scene.bind_sensor_data(
+            self._self_collision_sensor_names
+        )
+        expected_dimensions = (1,) * len(self._self_collision_sensor_names)
+        if self._self_collision_view.dimensions != expected_dimensions:
+            raise ValueError(
+                f"{term} self-collision sensors must each expose 1-D found data; "
+                f"expected {expected_dimensions}, got {self._self_collision_view.dimensions}"
+            )
         self._output_path = _asset_path(_name(term, "output_path", cfg.params.get("output_path")))
         if self._output_path.suffix != ".npz":
             raise ValueError(f"{term} output_path must end in .npz")
@@ -696,8 +772,22 @@ class LeapHoraGraspRecorder(RecorderTerm):
         self._trial_friction_min = np.full(env.num_envs, np.inf)
         self._trial_friction_max = np.full(env.num_envs, -np.inf)
         self._rejected_validation = 0
+        self._rejected_self_collision = 0
         self._rejected_duplicates = 0
         self._saved = False
+
+    def _self_collision(self, ids: np.ndarray) -> np.ndarray:
+        values = np.asarray(self._self_collision_view.read())
+        expected = (
+            cast("_HoraGraspEnv", self._env).num_envs,
+            len(self._self_collision_sensor_names),
+        )
+        if values.shape != expected:
+            raise RuntimeError(
+                "HORA grasp self-collision sensors returned an incompatible shape: "
+                f"expected {expected}, got {values.shape}"
+            )
+        return np.any(values[ids] > self._self_collision_threshold, axis=1)
 
     @staticmethod
     def _axes(rows: np.ndarray) -> np.ndarray:
@@ -793,13 +883,16 @@ class LeapHoraGraspRecorder(RecorderTerm):
         away_from_limits = np.all(
             (observation.dof_pos[ids] > lower) & (observation.dof_pos[ids] < upper), axis=1
         )
+        self_collision = self._self_collision(ids)
         passed = (
             env.reset_time_outs[ids]
             & ~env.reset_terminated[ids]
             & self._quality.stable[ids]
             & ~self._quality.grasp.palm_supported[ids]
             & away_from_limits
+            & ~self_collision
         )
+        self._rejected_self_collision += int(np.count_nonzero(self_collision))
         settled = np.concatenate(
             (
                 observation.dof_pos[ids],
@@ -845,6 +938,7 @@ class LeapHoraGraspRecorder(RecorderTerm):
             {
                 "hora_grasp/cache_size": float(len(self._rows)),
                 "hora_grasp/rejected_validation": float(self._rejected_validation),
+                "hora_grasp/rejected_self_collision": float(self._rejected_self_collision),
                 "hora_grasp/rejected_near_duplicates": float(self._rejected_duplicates),
             }
         )
@@ -856,6 +950,7 @@ class LeapHoraGraspRecorder(RecorderTerm):
                     "saved_grasps": len(self._rows),
                     "validation_trials": self._validation_trials,
                     "rejected_validation": self._rejected_validation,
+                    "rejected_self_collision": self._rejected_self_collision,
                     "rejected_near_duplicates": self._rejected_duplicates,
                     "output_path": str(self._output_path),
                     **self._accepted_distribution(),
@@ -867,7 +962,7 @@ class LeapHoraGraspRecorder(RecorderTerm):
 
 
 registry.register_env_config("LeapInhandHoraGrasp", ManagerBasedRlEnvCfg)
-registry.register_env("LeapInhandHoraGrasp", make_manager_based_rl_env, sim_backend="mujoco")
+registry.register_env("LeapInhandHoraGrasp", make_leap_hora_env, sim_backend="mujoco")
 
 
 __all__ = [
@@ -877,4 +972,5 @@ __all__ = [
     "LeapHoraCylinderMassInertia",
     "LeapHoraGraspRecorder",
     "LeapHoraHandObjectReset",
+    "make_leap_hora_env",
 ]

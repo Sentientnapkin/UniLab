@@ -103,6 +103,22 @@
       data="found" num="1" reduce="mindist"/>
     <contact name="palm_10_object_contact" geom1="palm_collision_10" geom2="object_visual"
       data="found" num="1" reduce="mindist"/>
+
+    <!-- Precision-grasp validation rejects contacts between digit subtrees.
+         Subtree selectors cover every collision geom on both digits without
+         coupling task code to MuJoCo's raw contact buffers. -->
+    <contact name="if_mf_self_contact" subtree1="if_bs" subtree2="mf_bs"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="if_rf_self_contact" subtree1="if_bs" subtree2="rf_bs"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="mf_rf_self_contact" subtree1="mf_bs" subtree2="rf_bs"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="th_if_self_contact" subtree1="th_bs" subtree2="if_bs"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="th_mf_self_contact" subtree1="th_bs" subtree2="mf_bs"
+      data="found" num="1" reduce="mindist"/>
+    <contact name="th_rf_self_contact" subtree1="th_bs" subtree2="rf_bs"
+      data="found" num="1" reduce="mindist"/>
   </sensor>
 
   <keyframe>
