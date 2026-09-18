@@ -12,6 +12,7 @@ import pytest
 import torch
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
+from omegaconf import OmegaConf
 from tensordict import TensorDict
 
 from unilab.base.config_adapter import BackendAdapter
@@ -48,10 +49,10 @@ _CONF = _ROOT / "src" / "unilab" / "conf" / "ppo"
 _MANIFEST = _ROOT / "experiments" / "leap_inhand" / "evaluation_manifest_v1.json"
 
 
-def _ppo_cfg(task: str):
+def _ppo_cfg(task: str, owner: str = "mujoco"):
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=str(_CONF), version_base="1.3"):
-        return compose(config_name="config", overrides=[f"task={task}/mujoco"])
+        return compose(config_name="config", overrides=[f"task={task}/{owner}"])
 
 
 def test_hora_owner_isolated_from_gait_baseline() -> None:
@@ -82,6 +83,39 @@ def test_hora_owner_isolated_from_gait_baseline() -> None:
     assert hora.algo.algorithm.enable_compile is False
     assert hora.reward.retained.weight == 0.0
     assert hora.reward.thumb_contact.weight == 0.0
+    assert hora.reward.frontier.weight == 0.0
+    assert hora.env.metrics.mean_axial_rotation_velocity.func.endswith(
+        "hora_axial_rotation_velocity"
+    )
+
+
+def test_hora_stage1_nominal_and_no_extrinsics_are_matched_profiles() -> None:
+    exact = _ppo_cfg("leap_inhand_hora_stage1", "mujoco_nominal")
+    control = _ppo_cfg("leap_inhand_hora_stage1", "mujoco_no_extrinsics")
+
+    assert exact.algo.experiment_name == "leap_hora_stage1_nominal_exact"
+    assert control.algo.experiment_name == "leap_hora_stage1_nominal_no_extrinsics"
+    assert exact.algo.actor.extrinsics_mode == "exact"
+    assert control.algo.actor.extrinsics_mode == "zero"
+    assert exact.interactive.policy_obs_mode == "actor"
+    assert control.interactive.policy_obs_mode == "actor"
+    assert exact.env.events.reset_hand_object.params.cylinder_geometry_override == [
+        0.032,
+        0.070,
+    ]
+    exact_container = OmegaConf.to_container(exact, resolve=True)
+    control_container = OmegaConf.to_container(control, resolve=True)
+    assert isinstance(exact_container, dict) and isinstance(control_container, dict)
+    exact_container["algo"]["actor"]["extrinsics_mode"] = "zero"
+    exact_container["algo"]["experiment_name"] = control_container["algo"]["experiment_name"]
+    assert exact_container == control_container
+    assert (
+        exact.env.observations.actor.terms.object_properties.params.property_ranges.object_mass
+        == [
+            0.020,
+            0.120,
+        ]
+    )
 
 
 def test_hora_grasp_owner_has_geometry_families_and_v2_output() -> None:
@@ -396,7 +430,19 @@ def test_hora_actor_jointly_updates_encoder_and_supports_ablations() -> None:
     assert any(parameter.grad is not None for parameter in actor.extrinsics_encoder.parameters())
 
     actor.set_extrinsics_mode("zero")
-    assert actor.get_latent(obs).shape == (batch, hardware_dim + 8)
+    zero_latent = actor.get_latent(obs)
+    assert zero_latent.shape == (batch, hardware_dim + 8)
+    changed_properties = obs["actor"].clone()
+    changed_properties[:, -len(PROPERTY_NAMES) :] += 100.0
+    changed_obs = TensorDict({"actor": changed_properties}, batch_size=batch)
+    torch.testing.assert_close(
+        actor.get_latent(changed_obs)[:, -8:],
+        torch.zeros(batch, 8),
+    )
+    zero_export = actor.as_onnx(verbose=False)
+    first_export = zero_export(obs["actor"])
+    second_export = zero_export(changed_properties)
+    torch.testing.assert_close(first_export, second_export)
     actor.set_extrinsics_mode("shuffled")
     assert actor.get_latent(obs).shape == (batch, hardware_dim + 8)
     actor.set_extrinsics_mode("frozen")
@@ -425,6 +471,52 @@ def test_property_normalization_is_declared_ordered_and_bounded() -> None:
         normalize_object_properties(values, ranges)
 
 
+def test_frontier_metric_advances_zero_weight_stateful_tracker() -> None:
+    from unilab.tasks.manipulation.leap_inhand.manager_terms import (
+        LeapBidirectionalFrontierReward,
+        frontier_state_metric,
+    )
+
+    class TrackingFrontier(LeapBidirectionalFrontierReward):
+        def __call__(self, env, **params):
+            del params
+            self.calls += 1
+            self.held_angle += 0.25 * env.step_dt
+            self.frontier_angle[:] = np.maximum(self.frontier_angle, np.abs(self.held_angle))
+            return np.zeros(env.num_envs, dtype=np.float32)
+
+    tracker = object.__new__(TrackingFrontier)
+    tracker.calls = 0
+    tracker.held_angle = np.zeros(2, dtype=np.float32)
+    tracker.frontier_angle = np.zeros(2, dtype=np.float32)
+    tracker.frontier_progress = np.zeros(2, dtype=np.float32)
+    tracker.frontier_speed = np.zeros(2, dtype=np.float32)
+    tracker.frontier_progress_multiplier = np.ones(2, dtype=np.float32)
+    tracker.directional_speed = np.zeros(2, dtype=np.float32)
+    tracker.filtered_directional_speed = np.zeros(2, dtype=np.float32)
+    tracker.fast_rotation_bonus = np.zeros(2, dtype=np.float32)
+    tracker.committed_direction = np.zeros(2, dtype=np.int8)
+    tracker.committed_time = np.zeros(2, dtype=np.float32)
+    tracker.opposite_direction_speed = np.zeros(2, dtype=np.float32)
+    tracker.reversal_penalty_event = np.zeros(2, dtype=np.bool_)
+    tracker.stalled = np.zeros(2, dtype=np.bool_)
+    tracker.milestone_bonus = np.zeros(2, dtype=np.float32)
+    tracker.milestones_reached = np.zeros(2, dtype=np.int32)
+    tracker.direction_reversals = np.zeros(2, dtype=np.int32)
+    term_cfg = SimpleNamespace(func=tracker, weight=0.0)
+    env = SimpleNamespace(
+        num_envs=2,
+        step_dt=0.05,
+        reward_manager=SimpleNamespace(get_term_cfg=lambda name: term_cfg),
+    )
+
+    value = frontier_state_metric(cast(Any, env), "frontier", "held_angle")
+
+    assert tracker.calls == 1
+    np.testing.assert_allclose(value, 0.0125)
+    np.testing.assert_allclose(tracker.frontier_angle, 0.0125)
+
+
 def test_evaluation_manifest_and_report_summary(tmp_path: Path) -> None:
     manifest = load_evaluation_manifest(_MANIFEST)
     assert len(manifest["cases"]) == 15
@@ -442,7 +534,10 @@ def test_evaluation_manifest_and_report_summary(tmp_path: Path) -> None:
         "env.events.reset_hand_object.params.grasp_cache_path="
         "caches/hora/leap_precision_grasps_v2.npz"
     ) in overrides
-    assert any("cylinder_geometry_override" in item for item in overrides)
+    assert any(
+        item.startswith("++env.events.reset_hand_object.params.cylinder_geometry_override=")
+        for item in overrides
+    )
     assert any("density_range" in item for item in overrides)
     assert any(item.startswith("++env.recorders.evaluation.func=") for item in overrides)
 
@@ -451,6 +546,7 @@ def test_evaluation_manifest_and_report_summary(tmp_path: Path) -> None:
         "net_committed_axis_rotation",
         "accumulated_rotation",
         "directional_speed",
+        "mean_axial_rotation_velocity",
         "object_linear_velocity",
         "estimated_torque",
         "estimated_work",
@@ -515,6 +611,9 @@ def test_hora_mujoco_observation_action_and_ppo_contract() -> None:
     from unilab.base import registry
     from unilab.scripts.train_rsl_rl import build_ppo_env_cfg_override
     from unilab.tasks.manipulation.leap_inhand.hora import LeapHoraPositionAction
+    from unilab.tasks.manipulation.leap_inhand.manager_terms import (
+        LeapBidirectionalFrontierReward,
+    )
     from unilab.training import algo_config_dict, ensure_registries
 
     cfg = _ppo_cfg("leap_inhand_hora_stage1")
@@ -535,6 +634,11 @@ def test_hora_mujoco_observation_action_and_ppo_contract() -> None:
         np.testing.assert_array_equal(action.gait_reference, 0.0)
         state = env.step(np.zeros((2, 16), dtype=np.float32))
         assert np.isfinite(state.obs["obs"]).all()
+        frontier_cfg = env.reward_manager.get_term_cfg("frontier")
+        assert frontier_cfg.weight == 0.0
+        assert isinstance(frontier_cfg.func, LeapBidirectionalFrontierReward)
+        assert frontier_cfg.func._last_counter == env.common_step_counter
+        assert "mean_axial_rotation_velocity" in env.metrics_manager.active_terms
 
         wrapped = RslRlVecEnvWrapper(env)
         runner = OnPolicyRunner(

@@ -108,6 +108,7 @@ def summarize_episode_reports(reports: Sequence[Mapping[str, Any]]) -> dict[str,
         "net_committed_axis_rotation",
         "accumulated_rotation",
         "directional_speed",
+        "mean_axial_rotation_velocity",
         "object_linear_velocity",
         "estimated_torque",
         "estimated_work",
@@ -196,6 +197,7 @@ class LeapEvaluationRecorder(RecorderTerm):
             name: np.zeros(env.num_envs, dtype=np.float64)
             for name in (
                 "object_linear_velocity",
+                "mean_axial_rotation_velocity",
                 "estimated_torque",
                 "estimated_work",
                 "valid_grasp_fraction",
@@ -217,6 +219,12 @@ class LeapEvaluationRecorder(RecorderTerm):
         grasp = self._grasp
         values = {
             "object_linear_velocity": np.linalg.norm(state.object_linvel, axis=1),
+            # HORA reports the episode-average *unclipped* omega dot desired-axis
+            # value in simulation. Keep it alongside UniLab's net/frontier gates.
+            "mean_axial_rotation_velocity": np.sum(
+                state.object_angvel * grasp.cylinder_axis_w, axis=1
+            )
+            * ~grasp.fallen,
             "estimated_torque": np.sum(np.square(state.torques), axis=1),
             "estimated_work": np.square(np.sum(state.torques * state.dof_vel, axis=1)),
             "valid_grasp_fraction": grasp.valid_grasp,

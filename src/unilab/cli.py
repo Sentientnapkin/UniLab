@@ -236,10 +236,39 @@ def _needs_motrix_renderer(mode: str, sim: str, overrides: Sequence[str]) -> boo
 
 
 def _python_executable_for_route(mode: str, sim: str, overrides: Sequence[str]) -> str:
-    if platform.system() != "Darwin" or not _needs_motrix_renderer(mode, sim, overrides):
+    if platform.system() != "Darwin":
         return sys.executable
 
-    return _mxpython_executable()
+    play_render_mode = _override_value(overrides, "training.play_render_mode")
+    if (
+        mode == "eval"
+        and sim in MUJOCO_VIEWER_PHYSICS_SIMS
+        and play_render_mode is not None
+        and play_render_mode.strip().lower() == "interactive"
+    ):
+        return _mjpython_executable()
+    if _needs_motrix_renderer(mode, sim, overrides):
+        return _mxpython_executable()
+    return sys.executable
+
+
+def _mjpython_executable() -> str:
+    if Path(sys.executable).name == "mjpython":
+        return sys.executable
+
+    # Prefer the launcher from the active uv/virtual environment so imports
+    # and compiled dependencies match the selected UniLab runtime.
+    venv_mjpython = Path(sys.executable).with_name("mjpython")
+    if venv_mjpython.is_file():
+        return str(venv_mjpython)
+
+    mjpython = shutil.which("mjpython")
+    if mjpython is not None:
+        return mjpython
+
+    raise SystemExit(
+        "macOS interactive MuJoCo playback requires `mjpython` in the active environment."
+    )
 
 
 def _mxpython_executable() -> str:

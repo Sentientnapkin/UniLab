@@ -558,13 +558,11 @@ class LeapIncrementalPositionAction(ActionTerm):
         if self._opposing_finger_policy_target_offset_limit is not None:
             opposing_lower = np.maximum(
                 opposing_lower,
-                self._episode_anchor[:, :12]
-                - self._opposing_finger_policy_target_offset_limit,
+                self._episode_anchor[:, :12] - self._opposing_finger_policy_target_offset_limit,
             )
             opposing_upper = np.minimum(
                 opposing_upper,
-                self._episode_anchor[:, :12]
-                + self._opposing_finger_policy_target_offset_limit,
+                self._episode_anchor[:, :12] + self._opposing_finger_policy_target_offset_limit,
             )
         np.clip(
             self._policy_target[:, :12],
@@ -1860,6 +1858,11 @@ def frontier_state_metric(env: _LeapEnv, reward_name: str, field: str) -> np.nda
             f"frontier_state_metric reward {name!r} must be "
             f"LeapBidirectionalFrontierReward, got {type(reward).__name__}"
         )
+    # RewardManager deliberately skips zero-weight terms.  Frontier tracking is
+    # also used as a diagnostic in HORA-style owners where it must not shape the
+    # policy, so let the metrics path advance the stateful tracker.  The term's
+    # common-step guard makes this a no-op when a nonzero reward already ran it.
+    reward(env)
     values = {
         "held_angle": reward.held_angle,
         "absolute_held_angle": np.abs(reward.held_angle),

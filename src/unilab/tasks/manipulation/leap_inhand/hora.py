@@ -328,6 +328,20 @@ def hora_axial_rotation(
     )
 
 
+def hora_axial_rotation_velocity(
+    env: ManagerBasedRlEnv,
+    state_term_name: str,
+    **unused_legacy_params: Any,
+) -> np.ndarray:
+    """Unclipped axial velocity used by HORA's simulation evaluation metric."""
+    del unused_legacy_params
+    grasp, state = _rotation_state(cast(Any, env), state_term_name)
+    if not isinstance(grasp, LeapGraspTermination):
+        raise TypeError("hora_axial_rotation_velocity requires LeapGraspTermination")
+    axial_velocity = np.sum(state.object_angvel * grasp.cylinder_axis_w, axis=1)
+    return np.asarray(axial_velocity * ~grasp.fallen, dtype=get_global_dtype())
+
+
 def joint_limit_occupancy(
     env: ManagerBasedRlEnv,
     action_name: str,
@@ -449,10 +463,14 @@ class HoraActor(MLPModel):
         del masks, hidden_state
         hardware, properties = self._split_observation(obs)
         hardware = self.hardware_normalizer(hardware)
-        extrinsics = self.extrinsics_encoder(properties)
         if self.extrinsics_mode == "zero":
-            extrinsics = torch.zeros_like(extrinsics)
-        elif self.extrinsics_mode == "shuffled" and extrinsics.shape[0] > 1:
+            # The no-extrinsics control must be structurally independent of
+            # simulator properties, not merely an exact latent zeroed after
+            # evaluating the encoder.
+            extrinsics = properties.new_zeros((*properties.shape[:-1], self.extrinsics_dim))
+        else:
+            extrinsics = self.extrinsics_encoder(properties)
+        if self.extrinsics_mode == "shuffled" and extrinsics.shape[0] > 1:
             extrinsics = torch.roll(extrinsics, shifts=1, dims=0)
         elif self.extrinsics_mode == "frozen":
             if self._frozen_extrinsics is None or self._frozen_extrinsics.shape != extrinsics.shape:
@@ -488,6 +506,8 @@ class _TorchHoraActor(torch.nn.Module):
     def __init__(self, model: HoraActor) -> None:
         super().__init__()
         self.property_dim = model.property_dim
+        self.extrinsics_dim = model.extrinsics_dim
+        self.zero_extrinsics = model.extrinsics_mode == "zero"
         self.hardware_normalizer = copy.deepcopy(model.hardware_normalizer)
         self.extrinsics_encoder = copy.deepcopy(model.extrinsics_encoder)
         self.mlp = copy.deepcopy(model.mlp)
@@ -500,7 +520,12 @@ class _TorchHoraActor(torch.nn.Module):
     def forward(self, observation: torch.Tensor) -> torch.Tensor:
         hardware = self.hardware_normalizer(observation[..., : -self.property_dim])
         properties = observation[..., -self.property_dim :]
-        latent = torch.cat((hardware, self.extrinsics_encoder(properties)), dim=-1)
+        extrinsics = (
+            properties.new_zeros((*properties.shape[:-1], self.extrinsics_dim))
+            if self.zero_extrinsics
+            else self.extrinsics_encoder(properties)
+        )
+        latent = torch.cat((hardware, extrinsics), dim=-1)
         return self.deterministic_output(self.mlp(latent))
 
     @torch.jit.export
@@ -539,6 +564,7 @@ __all__ = [
     "LeapObjectProperties",
     "PROPERTY_NAMES",
     "hora_axial_rotation",
+    "hora_axial_rotation_velocity",
     "joint_limit_occupancy",
     "normalize_object_properties",
 ]

@@ -47,7 +47,9 @@ env:
             property_ranges:
               cylinder_radius: [0.028, 0.036]
               cylinder_length: [0.060, 0.080]
-              object_mass: [0.030, 0.090]
+              # The validated cache spans 0.022--0.114 kg across geometry and
+              # density. Keep a small declared margin for later curriculum tiers.
+              object_mass: [0.020, 0.120]
               sliding_friction: [0.60, 1.60]
               torsional_friction: [0.03, 0.08]
               com_x: [-0.003, 0.003]
@@ -147,6 +149,11 @@ env:
     joint_limit_occupancy:
       func: unilab.tasks.manipulation.leap_inhand.hora.joint_limit_occupancy
       params: {action_name: hand, margin_fraction: 0.02}
+    # HORA's simulation RotR metric is the episode-average unclipped omega dot
+    # desired-axis value; the clipped counterpart remains the training reward.
+    mean_axial_rotation_velocity:
+      func: unilab.tasks.manipulation.leap_inhand.hora.hora_axial_rotation_velocity
+      params: {state_term_name: dropped}
     object_linear_velocity:
       func: unilab.tasks.manipulation.leap_inhand.manager_terms.object_linear_velocity_l1
       params: {state_term_name: dropped}
@@ -203,3 +210,10 @@ reward:
     weight: -0.05
   drop:
     weight: -200.0
+
+# HoraActor consumes the full actor observation, then replaces the 10 raw
+# privileged properties with its learned 8D latent internally. The generic
+# interactive checkpoint heuristic sees the MLP's 104 inputs and cannot infer
+# that contract from the raw 106D observation.
+interactive:
+  policy_obs_mode: actor

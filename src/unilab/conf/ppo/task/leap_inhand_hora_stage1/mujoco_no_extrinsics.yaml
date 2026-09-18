@@ -1,0 +1,11 @@
+# @package _global_
+# Stage 1 control: identical tier-0 task and network input width, but the actor
+# is trained from scratch with a constant zero latent independent of properties.
+defaults:
+  - /task/leap_inhand_hora_stage1/mujoco_nominal
+  - _self_
+
+algo:
+  experiment_name: leap_hora_stage1_nominal_no_extrinsics
+  actor:
+    extrinsics_mode: zero

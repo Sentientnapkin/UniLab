@@ -1,0 +1,17 @@
+# @package _global_
+# Stage 1 tier 0: exact privileged extrinsics, one medium cylinder, and
+# otherwise nominal physics. This is the first learning and seed-stability gate.
+defaults:
+  - /task/leap_inhand_hora_stage1/mujoco
+  - _self_
+
+algo:
+  experiment_name: leap_hora_stage1_nominal_exact
+  actor:
+    extrinsics_mode: exact
+
+env:
+  events:
+    reset_hand_object:
+      params:
+        cylinder_geometry_override: [0.032, 0.070]

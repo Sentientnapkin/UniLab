@@ -90,7 +90,7 @@ def build_case_overrides(
             (
                 "env.events.reset_hand_object.params.grasp_cache_path=caches/hora/leap_precision_grasps_v2.npz",
                 "env.events.reset_hand_object.params.cache_splits=[train,validation,held_out]",
-                "+env.events.reset_hand_object.params.cylinder_geometry_override="
+                "++env.events.reset_hand_object.params.cylinder_geometry_override="
                 f"[{_scalar(case['cylinder_radius'])},{_scalar(case['cylinder_length'])}]",
                 "env.events.cylinder_mass_inertia.params.density_range="
                 f"[{_scalar(density)},{_scalar(density)}]",
@@ -127,6 +127,14 @@ def main() -> int:
         help="Optional PPO task owner; defaults to the matching gait or HORA owner.",
     )
     parser.add_argument(
+        "--profile",
+        default=None,
+        help=(
+            "Optional task-owner profile, such as nominal or no_extrinsics. "
+            "Use the checkpoint's training profile so actor ablations are preserved."
+        ),
+    )
+    parser.add_argument(
         "--case-id",
         action="append",
         default=None,
@@ -161,7 +169,7 @@ def main() -> int:
             algo="ppo",
             task=task,
             sim="mujoco",
-            profile=None,
+            profile=args.profile,
             overrides=overrides,
             load_run=None,
             render_mode="none",

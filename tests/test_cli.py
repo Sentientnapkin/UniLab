@@ -226,6 +226,7 @@ def test_eval_mujoco_interactive_routes_to_dedicated_viewer(
         "find_spec",
         lambda name: ModuleSpec(name, loader=None) if name == "mujoco" else None,
     )
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
 
     command = cli.build_command(
         mode="eval",
@@ -272,6 +273,7 @@ def test_eval_mujoco_interactive_honors_profile_and_render_override(
         "find_spec",
         lambda name: ModuleSpec(name, loader=None) if name == "mujoco" else None,
     )
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
 
     command = cli.build_command(
         mode="eval",
@@ -300,6 +302,45 @@ def test_eval_mujoco_interactive_honors_profile_and_render_override(
         "training.play_render_mode=interactive",
         "algo.num_envs=4096",
     ]
+
+
+def test_macos_mujoco_interactive_eval_uses_active_venv_mjpython(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "train_rsl_rl.py").write_text("", encoding="utf-8")
+    (scripts_dir / "play_interactive.py").write_text("", encoding="utf-8")
+    owner_dir = tmp_path / "conf" / "ppo" / "task" / "go2_joystick_flat"
+    owner_dir.mkdir(parents=True)
+    (owner_dir / "mujoco.yaml").write_text("training:\n  sim_backend: mujoco\n", encoding="utf-8")
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    fake_python = venv_bin / "python"
+    fake_mjpython = venv_bin / "mjpython"
+    fake_python.write_text("", encoding="utf-8")
+    fake_mjpython.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        cli,
+        "find_spec",
+        lambda name: ModuleSpec(name, loader=None) if name == "mujoco" else None,
+    )
+    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(cli.sys, "executable", str(fake_python))
+
+    command = cli.build_command(
+        mode="eval",
+        algo="ppo",
+        task="go2_joystick_flat",
+        sim="mujoco",
+        overrides=[],
+        load_run="-1",
+        render_mode="interactive",
+        root=tmp_path,
+    )
+
+    assert command[0] == str(fake_mjpython)
+    assert command[1] == str(scripts_dir / "play_interactive.py")
 
 
 def _make_superdex_eval_checkout(root: Path) -> None:
@@ -556,6 +597,7 @@ def test_eval_mujoco_interactive_falls_back_to_sibling_owner(
         "find_spec",
         lambda name: ModuleSpec(name, loader=None) if name == "mujoco" else None,
     )
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
 
     command = cli.build_command(
         mode="eval",
@@ -609,6 +651,7 @@ def test_eval_mjwarp_interactive_routes_to_dedicated_viewer(
 ) -> None:
     scripts_dir = _make_mjwarp_checkout(tmp_path)
     _pretend_mjwarp_is_installed(monkeypatch)
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
 
     command = cli.build_command(
         mode="eval",

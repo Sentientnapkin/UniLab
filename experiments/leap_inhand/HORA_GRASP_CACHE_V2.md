@@ -10,10 +10,10 @@ This command requires no MuJoCo installation and performs no simulation:
 ```bash
 uv run python -m unilab.scripts.generate_leap_hora_grasps \
   --describe-only \
-  --num-envs 64 \
+  --num-envs 63 \
   --target 10000 \
   --seed 42 \
-  --max-control-steps 5000000 \
+  --max-control-steps 100000 \
   --output src/unilab/assets/caches/hora/leap_precision_grasps_v2.npz
 ```
 
@@ -23,10 +23,10 @@ Install the repository's MuJoCo extra first. Then run:
 
 ```bash
 uv run python -m unilab.scripts.generate_leap_hora_grasps \
-  --num-envs 64 \
+  --num-envs 63 \
   --target 10000 \
   --seed 42 \
-  --max-control-steps 5000000 \
+  --max-control-steps 100000 \
   --output src/unilab/assets/caches/hora/leap_precision_grasps_v2.npz
 ```
 
@@ -44,6 +44,7 @@ Each candidate is sampled once and replayed for three trials. Every trial must:
 - reach the two-second timeout without geometric escape;
 - retain thumb plus at least two opposing-finger contacts;
 - avoid sustained palm support;
+- avoid contact between any pair of finger subtrees;
 - finish below the configured linear- and angular-speed limits; and
 - remain outside the configured joint-limit margin.
 
@@ -53,9 +54,9 @@ Candidates are diversity-filtered within their geometry using joint RMS,
 object position, and cylinder-axis orientation; spin around the symmetry axis
 is ignored.
 
-The current backend contract does not expose self-collision pairs to task code.
-Explicit self-collision rejection therefore remains a Phase 1 blocker rather
-than using backend-private contact state.
+Self-collision is read through six named MuJoCo subtree-contact sensors bound by
+the public scene sensor interface. Task code does not inspect raw backend
+contact buffers.
 
 ## Output contract
 
