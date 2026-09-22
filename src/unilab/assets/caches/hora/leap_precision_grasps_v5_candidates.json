@@ -1,0 +1,67 @@
+{
+  "exact_duplicates_removed": 0,
+  "manifest_path": "/Users/School/Research/UniLab-hora/src/unilab/assets/caches/hora/leap_precision_grasps_v5_candidates.json",
+  "merged": {
+    "family_counts": {
+      "balanced_thumb_index_middle": 687,
+      "index_forward_load": 1311,
+      "middle_opposition_expansion": 2000,
+      "outer_finger_load": 307
+    },
+    "rows": 4305,
+    "split_counts": {
+      "held_out": 0,
+      "train": 4305,
+      "validation": 0
+    }
+  },
+  "middle_family_name": "middle_opposition_expansion",
+  "output_path": "/Users/School/Research/UniLab-hora/src/unilab/assets/caches/hora/leap_precision_grasps_v5_candidates.npz",
+  "sources": [
+    {
+      "family_counts": {
+        "balanced_thumb_index_middle": 501,
+        "index_forward_load": 948,
+        "outer_finger_load": 209
+      },
+      "path": "/Users/School/Research/UniLab-hora/src/unilab/assets/caches/hora/leap_precision_grasps_v3_anchor.npz",
+      "rows": 1658,
+      "split_counts": {
+        "held_out": 0,
+        "train": 1658,
+        "validation": 0
+      }
+    },
+    {
+      "family_counts": {
+        "balanced_thumb_index_middle": 186,
+        "index_forward_load": 363,
+        "outer_finger_load": 98
+      },
+      "path": "/Users/School/Research/UniLab-hora/src/unilab/assets/caches/hora/leap_precision_grasps_v3_recoverable.npz",
+      "rows": 647,
+      "split_counts": {
+        "held_out": 0,
+        "train": 647,
+        "validation": 0
+      }
+    },
+    {
+      "family_counts": {
+        "middle_opposition_seed_00": 288,
+        "middle_opposition_seed_01": 629,
+        "middle_opposition_seed_02": 197,
+        "middle_opposition_seed_03": 87,
+        "middle_opposition_seed_04": 212,
+        "middle_opposition_seed_05": 587
+      },
+      "path": "/Users/School/Research/UniLab-hora/src/unilab/assets/caches/hora/leap_precision_grasps_middle_expansion_2k.npz",
+      "rows": 2000,
+      "split_counts": {
+        "held_out": 0,
+        "train": 2000,
+        "validation": 0
+      }
+    }
+  ]
+}

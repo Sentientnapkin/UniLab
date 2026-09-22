@@ -1,0 +1,16 @@
+# @package _global_
+# Stage B4: preserve B3's improved contact topology and signed rotation while
+# relaxing only the initial-grasp pose penalty.  The literal HORA coefficient
+# is not assumed to transfer numerically from Allegro to LEAP.
+defaults:
+  - /task/leap_inhand_hora_stage1/mujoco_rotate_b3
+  - _self_
+
+algo:
+  experiment_name: leap_hora_stage1_rotate_b4_exact
+
+reward:
+  # B3's -0.3 penalty recovered middle-finger contact and the correct rotation
+  # direction, but median motion remained very small.  This single-variable
+  # ablation allows more regrasp motion without returning to Stage A's -0.03.
+  pose_diff: {weight: -0.1}

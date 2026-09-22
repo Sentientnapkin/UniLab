@@ -1,0 +1,37 @@
+# @package _global_
+# Stage A: learn active grasp recovery before asking the same policy to rotate.
+# The cache is rebuilt from v5 passive-qualification scores with capacity-aware
+# family targets and an 80/20 anchor/recoverable mixture.
+defaults:
+  - /task/leap_inhand_hora_stage1/mujoco_nominal
+  - _self_
+
+algo:
+  experiment_name: leap_hora_stage1_stabilize_exact
+  actor:
+    # Start from a literal hold command. Exploration is deliberately small so
+    # PPO first learns corrective motion instead of immediately destroying the
+    # sampled precision grasp.
+    zero_mean_output_init: true
+    distribution_cfg:
+      class_name: rsl_rl.modules.distribution.GaussianDistribution
+      init_std: 0.03
+      std_type: scalar
+
+env:
+  events:
+    reset_hand_object:
+      params:
+        grasp_cache_path: caches/hora/leap_precision_grasps_v5_stage_a_weighted.npz
+
+reward:
+  # Stage A prioritizes maintaining/recovering a precision grasp. A small
+  # rotation term prevents a completely static local optimum without making
+  # rotation the dominant learning signal yet.
+  retained: {weight: 1.0}
+  rotate: {weight: 0.1}
+  pose_diff: {weight: -0.03}
+  obj_linvel: {weight: -0.3}
+  torque: {weight: -0.1}
+  work: {weight: -1.0}
+  drop: {weight: -20.0}

@@ -53,9 +53,11 @@ PROPERTY_NAMES = (
 
 @dataclass(kw_only=True)
 class LeapHoraPositionActionCfg(LeapIncrementalPositionActionCfg):
-    """Bounded position offsets around the episode's sampled grasp pose."""
+    """HORA-style incremental position targets."""
 
-    target_offset_limit: float = 0.25
+    # HORA uses action / 24 per policy step.
+    action_scale: float = 1.0 / 24.0
+
     latency_steps_range: tuple[int, int] | list[int] = (0, 0)
 
     def build(self, env: ManagerBasedRlEnv) -> LeapHoraPositionAction:
@@ -63,40 +65,66 @@ class LeapHoraPositionActionCfg(LeapIncrementalPositionActionCfg):
 
 
 class LeapHoraPositionAction(LeapIncrementalPositionAction):
-    """No-gait, non-integrating joint targets suitable for HORA Stage 1.
+    """Latency-aware HORA position-target integrator.
 
-    The policy action is interpreted as a bounded offset from the grasp sampled
-    at reset.  A latency in whole 20 Hz policy steps is sampled once per episode,
-    making latency a coherent privileged property rather than per-step noise.
+    The deployable action is a joint-target increment. Each policy step adds
+    ``action_scale * delayed_action`` to the preceding target, then clips only
+    to the actuator limits. No gait, anchor-relative bound, or return-to-grasp
+    term is applied after reset.
     """
 
-    cfg: LeapHoraPositionActionCfg  # pyright: ignore[reportIncompatibleVariableOverride]
+    cfg: LeapHoraPositionActionCfg
 
     def __init__(self, cfg: LeapHoraPositionActionCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
+
         term = type(self).__name__
-        self._target_offset_limit = _real(
-            term,
-            "target_offset_limit",
-            cfg.target_offset_limit,
-            minimum=0.0,
-            strict_minimum=True,
-        )
+        anchor_fields = {
+            "thumb_policy_target_offset_limit": cfg.thumb_policy_target_offset_limit,
+            "thumb_target_return_time_constant": cfg.thumb_target_return_time_constant,
+            "opposing_finger_policy_target_offset_limit": (
+                cfg.opposing_finger_policy_target_offset_limit
+            ),
+            "opposing_finger_target_return_time_constant": (
+                cfg.opposing_finger_target_return_time_constant
+            ),
+        }
+        active_anchor_fields = [name for name, value in anchor_fields.items() if value is not None]
+        if active_anchor_fields:
+            raise ValueError(
+                f"{term} supports only pure integration; set these fields to null: "
+                f"{active_anchor_fields}"
+            )
+        if self._thumb_gait_amplitude != 0.0 or any(
+            amplitude != 0.0 for _, amplitude in self._gait_schedule
+        ):
+            raise ValueError(f"{term} does not support a scripted gait")
+        if any(probability != 0.0 for _, probability in self._action_delay_probability_schedule):
+            raise ValueError(
+                f"{term} uses latency_steps_range; action_delay_probability_schedule must be zero"
+            )
+
         values = cfg.latency_steps_range
         if isinstance(values, (str, bytes)) or not isinstance(values, (tuple, list)):
             raise TypeError(f"{term} latency_steps_range must be an integer pair")
+
         if len(values) != 2 or any(
             isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer))
             for value in values
         ):
             raise TypeError(f"{term} latency_steps_range must be an integer pair")
+
         lower, upper = int(values[0]), int(values[1])
+
         if lower < 0 or lower > upper:
             raise ValueError(f"{term} latency_steps_range must satisfy 0 <= lower <= upper")
+
         self._latency_steps_range = (lower, upper)
         self._latency_steps = np.zeros(env.num_envs, dtype=np.int64)
+
         self._action_history = np.zeros(
-            (env.num_envs, upper + 1, self.action_dim), dtype=get_global_dtype()
+            (env.num_envs, upper + 1, self.action_dim),
+            dtype=get_global_dtype(),
         )
 
     @property
@@ -114,25 +142,40 @@ class LeapHoraPositionAction(LeapIncrementalPositionAction):
             raise ValueError(f"expected action shape {self._raw_action.shape}, got {actions.shape}")
         if not np.isfinite(actions).all():
             raise ValueError("received NaN or Inf actions")
+
         self._raw_action[:] = actions
         self._action_history[:, 1:] = self._action_history[:, :-1]
         self._action_history[:, 0] = actions
         self._effective_action[:] = self._action_history[
             np.arange(self._env.num_envs), self._latency_steps
         ]
+        self._command_delayed[:] = self._latency_steps > 0
+        self._previous_policy_action[:] = actions
+
+        noise_std = self.action_noise_std
+        if noise_std > 0.0:
+            self._command_noise[:] = self._env.rng.normal(
+                0.0,
+                noise_std,
+                size=self._command_noise.shape,
+            )
+            self._effective_action += self._command_noise
+        else:
+            self._command_noise[:] = 0.0
         np.clip(
             self._effective_action,
             self._raw_clip[0],
             self._raw_clip[1],
             out=self._clipped_action,
         )
-        offset = np.clip(
-            self._scale * self._clipped_action,
-            -self._target_offset_limit,
-            self._target_offset_limit,
+
+        self._policy_target += self._scale * self._clipped_action
+        np.clip(
+            self._policy_target,
+            self._ctrl_lower,
+            self._ctrl_upper,
+            out=self._policy_target,
         )
-        np.add(self._episode_anchor, offset, out=self._policy_target)
-        np.clip(self._policy_target, self._ctrl_lower, self._ctrl_upper, out=self._policy_target)
         self._gait_reference.fill(0.0)
         self._target[:] = self._policy_target
 
@@ -404,6 +447,7 @@ class HoraActor(MLPModel):
         extrinsics_dim: int = 8,
         encoder_hidden_dims: tuple[int, ...] | list[int] = (32, 32),
         extrinsics_mode: Literal["exact", "zero", "shuffled", "frozen", "predicted"] = "exact",
+        zero_mean_output_init: bool = False,
     ) -> None:
         self.property_dim = int(property_dim)
         self.extrinsics_dim = int(extrinsics_dim)
@@ -418,10 +462,18 @@ class HoraActor(MLPModel):
             False,
             distribution_cfg,
         )
+        if zero_mean_output_init:
+            output_layers = [module for module in self.mlp.modules() if isinstance(module, torch.nn.Linear)]
+            if not output_layers:
+                raise RuntimeError("HoraActor MLP has no linear output layer to initialize")
+            torch.nn.init.zeros_(output_layers[-1].weight)
+            if output_layers[-1].bias is not None:
+                torch.nn.init.zeros_(output_layers[-1].bias)
         if self.obs_dim <= self.property_dim:
             raise ValueError("HoraActor observation must include hardware history and properties")
         self.hardware_dim = self.obs_dim - self.property_dim
         self.obs_normalization = bool(obs_normalization)
+        self.freeze_normalization = False
         self.hardware_normalizer = (
             EmpiricalNormalization(self.hardware_dim) if obs_normalization else torch.nn.Identity()
         )
@@ -489,9 +541,9 @@ class HoraActor(MLPModel):
             self._frozen_extrinsics = None
 
     def update_normalization(self, obs: TensorDict) -> None:
-        if self.obs_normalization:
+        if self.obs_normalization and not self.freeze_normalization:
             hardware, _ = self._split_observation(obs)
-            self.hardware_normalizer.update(hardware)  # type: ignore[union-attr]
+            self.hardware_normalizer.update(hardware)
 
     def as_jit(self) -> torch.nn.Module:
         return _TorchHoraActor(self)

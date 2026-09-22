@@ -1,0 +1,12 @@
+# @package _global_
+
+defaults:
+  - /task/leap_inhand_hora_stage1/mujoco_rotate_b8
+  - _self_
+
+algo:
+  experiment_name: leap_hora_stage1_rotate_b10_scratch_exact
+
+training:
+  resume_mode: full
+  freeze_actor: false

@@ -68,12 +68,18 @@ env:
       _target_: unilab.tasks.manipulation.leap_inhand.hora.LeapHoraPositionActionCfg
       entity_name: robot
       actuator_names: [".*"]
-      action_scale: 0.25
+      action_scale: 0.0416666667
       raw_action_clip: [-1.0, 1.0]
-      target_offset_limit: 0.25
       latency_steps_range: [0, 0]
       reset_target_from_joint_state: true
-      # Parent fields are explicitly inert; no cyclic reference is generated.
+      # Pure HORA integration: accumulated targets persist until the policy
+      # changes them and are constrained only by physical actuator limits.
+      thumb_policy_target_offset_limit: null
+      thumb_target_return_time_constant: null
+      opposing_finger_policy_target_offset_limit: null
+      opposing_finger_target_return_time_constant: null
+      # Scripted gait and probabilistic delay are disabled. Episode-coherent
+      # latency is owned by latency_steps_range; command noise remains usable.
       gait_amplitude_schedule: [{step: 0, amplitude: 0.0}]
       thumb_gait_amplitude: 0.0
       action_delay_probability_schedule: [{step: 0, probability: 0.0}]
@@ -201,15 +207,20 @@ reward:
   thumb_contact: {weight: 0.0}
   completed: {weight: 0.0}
   obj_linvel:
-    weight: -0.1
+    weight: -0.3
   pose_diff:
-    weight: -0.001
+    # Literal HORA coefficient.  The reward-v3 sweep showed that a calibrated
+    # -0.01 term allowed fast one-way grasp deformation and failure, so this
+    # pilot tests HORA's strong dense grasp-preservation constraint directly.
+    weight: -0.3
   torque:
-    weight: -0.02
+    weight: -0.1
   work:
-    weight: -0.05
+    weight: -2.0
   drop:
-    weight: -200.0
+    # Match HORA: a drop terminates the episode and forfeits future rotation
+    # reward; it does not inject a separate high-variance terminal cost.
+    weight: 0.0
 
 # HoraActor consumes the full actor observation, then replaces the 10 raw
 # privileged properties with its learned 8D latent internally. The generic

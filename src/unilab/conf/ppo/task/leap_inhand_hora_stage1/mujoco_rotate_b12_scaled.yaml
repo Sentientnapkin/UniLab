@@ -1,0 +1,16 @@
+# @package _global_
+# B12: scaled plain-HORA Stage 1.
+# From scratch, exact privileged extrinsics, compact B8 reward.
+# Only deliberate algorithmic change from B10 is shorter rollout horizon.
+
+defaults:
+  - /task/leap_inhand_hora_stage1/mujoco_rotate_b8
+  - _self_
+
+algo:
+  experiment_name: leap_hora_stage1_rotate_b12_scaled
+  num_steps_per_env: 8
+
+training:
+  resume_mode: full
+  freeze_actor: false

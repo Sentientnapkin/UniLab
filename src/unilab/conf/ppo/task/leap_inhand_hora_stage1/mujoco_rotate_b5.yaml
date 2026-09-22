@@ -1,0 +1,15 @@
+# @package _global_
+# Stage B5: test whether B4's safe but nearly static policy is limited by the
+# magnitude of the clipped axial-velocity objective.  Change only its weight.
+defaults:
+  - /task/leap_inhand_hora_stage1/mujoco_rotate_b4
+  - _self_
+
+algo:
+  experiment_name: leap_hora_stage1_rotate_b5_exact
+
+reward:
+  # B4 improved survival and grasp validity but did not beat B3 checkpoint 499
+  # on rotation.  Double the useful-motion signal without simultaneously
+  # weakening retention or changing action semantics.
+  rotate: {weight: 2.0}

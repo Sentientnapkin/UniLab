@@ -1,0 +1,14 @@
+# @package _global_
+# Stage B6: make static dense retention less attractive while restoring part of
+# B3's pose-preservation pressure.  This is an intentional two-variable step.
+defaults:
+  - /task/leap_inhand_hora_stage1/mujoco_rotate_b5
+  - _self_
+
+algo:
+  experiment_name: leap_hora_stage1_rotate_b6_exact
+
+reward:
+  rotate: {weight: 2.0}
+  retained: {weight: 0.1}
+  pose_diff: {weight: -0.15}

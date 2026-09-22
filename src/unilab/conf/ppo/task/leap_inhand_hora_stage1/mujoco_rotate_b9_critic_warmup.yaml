@@ -1,0 +1,14 @@
+# @package _global_
+# B9 critic warmup: preserve the Stage-A policy while fitting a fresh
+# critic to the compact HORA objective.
+
+defaults:
+  - /task/leap_inhand_hora_stage1/mujoco_rotate_b8
+  - _self_
+
+algo:
+  experiment_name: leap_hora_stage1_rotate_b9_critic_warmup_exact
+
+training:
+  resume_mode: actor_only
+  freeze_actor: true

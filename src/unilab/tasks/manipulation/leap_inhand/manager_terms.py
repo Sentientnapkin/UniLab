@@ -1039,7 +1039,12 @@ class LeapGraspTermination(ManagerTermBase):
         self.lateral_drift = np.zeros(env.num_envs, dtype=dtype)
         self.tilt_rad = np.zeros(env.num_envs, dtype=dtype)
         self.opposing_contact_count = np.zeros(env.num_envs, dtype=np.int32)
+        # Raw contact is retained separately from the grace-filtered deployment
+        # signal so rollout audits can distinguish a real fingertip contact from
+        # the short contact-loss grace period used by the task.
+        self.raw_opposing_contacts = np.zeros((env.num_envs, len(opposing_groups)), dtype=np.bool_)
         self.opposing_contacts = np.zeros((env.num_envs, len(opposing_groups)), dtype=np.bool_)
+        self.raw_thumb_contact = np.zeros(env.num_envs, dtype=np.bool_)
         self.thumb_contact = np.zeros(env.num_envs, dtype=np.bool_)
         self._opposing_contact_gap = np.zeros((env.num_envs, len(opposing_groups)), dtype=dtype)
         self._thumb_contact_gap = np.zeros(env.num_envs, dtype=dtype)
@@ -1068,7 +1073,9 @@ class LeapGraspTermination(ManagerTermBase):
             self.lateral_drift,
             self.tilt_rad,
             self.opposing_contact_count,
+            self.raw_opposing_contacts,
             self.opposing_contacts,
+            self.raw_thumb_contact,
             self.thumb_contact,
             self._opposing_contact_gap,
             self._thumb_contact_gap,
@@ -1106,6 +1113,7 @@ class LeapGraspTermination(ManagerTermBase):
             ],
             axis=1,
         )
+        self.raw_opposing_contacts[:] = opposing_raw
         self._opposing_contact_gap[:] = np.where(
             opposing_raw, 0.0, self._opposing_contact_gap + env.step_dt
         )
@@ -1113,6 +1121,7 @@ class LeapGraspTermination(ManagerTermBase):
         self.opposing_contacts[:] = opposing
         self.opposing_contact_count[:] = np.count_nonzero(opposing, axis=1)
         thumb_raw = np.any(self._thumb_contact.read() > 0.5, axis=1)
+        self.raw_thumb_contact[:] = thumb_raw
         self._thumb_contact_gap[:] = np.where(thumb_raw, 0.0, self._thumb_contact_gap + env.step_dt)
         self.thumb_contact[:] = self._thumb_contact_gap <= self._finger_contact_grace_seconds
         self.palm_contact[:] = np.any(self._palm_contacts.read() > 0.5, axis=1)

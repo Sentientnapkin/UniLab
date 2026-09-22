@@ -257,6 +257,32 @@ class HoraGraspCache:
         }
         return HoraGraspCache(**kwargs, family_names=self.family_names)
 
+    def take(self, indices: np.ndarray | Sequence[int]) -> HoraGraspCache:
+        """Return cache rows by index while preserving schema-v2 metadata."""
+        selected = np.asarray(indices, dtype=np.int64)
+        if selected.ndim != 1:
+            raise ValueError("HORA grasp cache indices must be one-dimensional")
+        if selected.size and (np.any(selected < 0) or np.any(selected >= self.size)):
+            raise IndexError("HORA grasp cache index is out of range")
+        kwargs = {
+            name: np.asarray(getattr(self, name))[selected]
+            for name in (
+                "joint_pos",
+                "object_pos",
+                "object_quat",
+                "cylinder_radius",
+                "cylinder_length",
+                "family_id",
+                "split",
+                "validation_trials",
+                "mass_min",
+                "mass_max",
+                "sliding_friction_min",
+                "sliding_friction_max",
+            )
+        }
+        return HoraGraspCache(**kwargs, family_names=self.family_names)
+
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
@@ -309,6 +335,91 @@ class HoraGraspCache:
             }
             family_names = tuple(str(value) for value in payload["family_names"].tolist())
         return cls(**kwargs, family_names=family_names)
+
+
+def merge_hora_grasp_caches(
+    caches: Sequence[HoraGraspCache],
+    *,
+    family_name_maps: Sequence[Mapping[str, str] | None] | None = None,
+    deduplicate: bool = True,
+) -> HoraGraspCache:
+    """Merge schema-v2 caches while reconciling their family namespaces.
+
+    Family mappings are applied before IDs are rebuilt, which lets generated
+    seed labels collapse into one logical family without losing any per-row
+    geometry or validation metadata. Exact duplicate initializations are
+    removed in first-source order when requested.
+    """
+    if not caches:
+        raise ValueError("at least one HORA grasp cache is required")
+    if family_name_maps is None:
+        family_name_maps = (None,) * len(caches)
+    if len(family_name_maps) != len(caches):
+        raise ValueError("family_name_maps must have one entry per cache")
+
+    target_names: list[str] = []
+    target_splits: dict[str, int] = {}
+    remapped_ids: list[np.ndarray] = []
+    for cache, configured_map in zip(caches, family_name_maps, strict=True):
+        name_map = {} if configured_map is None else dict(configured_map)
+        unknown = set(name_map) - set(cache.family_names)
+        if unknown:
+            raise ValueError(f"family mapping contains unknown source names: {sorted(unknown)}")
+        cache_ids = np.empty(cache.size, dtype=np.int16)
+        for source_id in np.unique(cache.family_id):
+            source_name = cache.family_names[int(source_id)]
+            target_name = name_map.get(source_name, source_name)
+            if not target_name:
+                raise ValueError("merged HORA family names must be non-empty")
+            rows = cache.family_id == source_id
+            split_ids = np.unique(cache.split[rows])
+            if split_ids.size != 1:
+                raise ValueError(f"source family {source_name!r} spans multiple splits")
+            split_id = int(split_ids[0])
+            previous_split = target_splits.get(target_name)
+            if previous_split is not None and previous_split != split_id:
+                raise ValueError(f"merged family {target_name!r} would span multiple splits")
+            target_splits[target_name] = split_id
+            if target_name not in target_names:
+                target_names.append(target_name)
+            cache_ids[rows] = target_names.index(target_name)
+        remapped_ids.append(cache_ids)
+
+    fields = (
+        "joint_pos",
+        "object_pos",
+        "object_quat",
+        "cylinder_radius",
+        "cylinder_length",
+        "split",
+        "validation_trials",
+        "mass_min",
+        "mass_max",
+        "sliding_friction_min",
+        "sliding_friction_max",
+    )
+    merged = {
+        name: np.concatenate([np.asarray(getattr(cache, name)) for cache in caches])
+        for name in fields
+    }
+    merged["family_id"] = np.concatenate(remapped_ids)
+
+    if deduplicate:
+        identity = np.concatenate(
+            (
+                merged["joint_pos"],
+                merged["object_pos"],
+                merged["object_quat"],
+                merged["cylinder_radius"][:, None],
+                merged["cylinder_length"][:, None],
+            ),
+            axis=1,
+        )
+        _, first = np.unique(identity, axis=0, return_index=True)
+        keep = np.sort(first)
+        merged = {name: values[keep] for name, values in merged.items()}
+
+    return HoraGraspCache(**merged, family_names=tuple(target_names))
 
 
 class LeapHoraHandObjectReset(LeapHandObjectReset):
@@ -570,6 +681,10 @@ class LeapHoraHandObjectReset(LeapHandObjectReset):
         self._repeat_candidate[ids] = False
 
         selected_rows = self._candidate_rows[ids]
+        # The base reset indexes the temporary per-call row array and therefore
+        # writes local 0..N indices.  Preserve the authoritative schema-v2 cache
+        # indices (or -1 for generated candidates) for diagnostics and audits.
+        selected_cache_indices = self.grasp_cache_index[ids].copy()
         saved_cache = self._grasp_cache
         saved_sampling = self._grasp_cache_sampling
         saved_cursor = self._grasp_cache_cursor
@@ -586,6 +701,7 @@ class LeapHoraHandObjectReset(LeapHandObjectReset):
             self._grasp_cache = saved_cache
             self._grasp_cache_sampling = saved_sampling
             self._grasp_cache_cursor = saved_cursor
+            self.grasp_cache_index[ids] = selected_cache_indices
 
 
 class LeapHoraCylinderMassInertia(ManagerTermBase):
@@ -684,6 +800,10 @@ class LeapHoraGraspRecorder(RecorderTerm):
             "minimum_position_distance_m",
             "minimum_axis_angle_deg",
             "geometry_tolerance_m",
+            "minimum_raw_thumb_contact_fraction",
+            "minimum_raw_middle_contact_fraction",
+            "minimum_raw_opposing_contact_fraction",
+            "minimum_raw_opposing_fingers",
         }
     )
 
@@ -757,6 +877,39 @@ class LeapHoraGraspRecorder(RecorderTerm):
         self._geometry_tolerance = _nonnegative(
             term, "geometry_tolerance_m", cfg.params.get("geometry_tolerance_m")
         )
+        self._minimum_raw_thumb_contact_fraction = _nonnegative(
+            term,
+            "minimum_raw_thumb_contact_fraction",
+            cfg.params.get("minimum_raw_thumb_contact_fraction", 0.0),
+        )
+        self._minimum_raw_middle_contact_fraction = _nonnegative(
+            term,
+            "minimum_raw_middle_contact_fraction",
+            cfg.params.get("minimum_raw_middle_contact_fraction", 0.0),
+        )
+        self._minimum_raw_opposing_contact_fraction = _nonnegative(
+            term,
+            "minimum_raw_opposing_contact_fraction",
+            cfg.params.get("minimum_raw_opposing_contact_fraction", 0.0),
+        )
+        for field, value in (
+            ("minimum_raw_thumb_contact_fraction", self._minimum_raw_thumb_contact_fraction),
+            ("minimum_raw_middle_contact_fraction", self._minimum_raw_middle_contact_fraction),
+            (
+                "minimum_raw_opposing_contact_fraction",
+                self._minimum_raw_opposing_contact_fraction,
+            ),
+        ):
+            if value > 1.0:
+                raise ValueError(f"{term} {field} must be at most 1")
+        minimum_raw_opposing_fingers = cfg.params.get("minimum_raw_opposing_fingers", 0)
+        if (
+            isinstance(minimum_raw_opposing_fingers, (bool, np.bool_))
+            or not isinstance(minimum_raw_opposing_fingers, Integral)
+            or not 0 <= int(minimum_raw_opposing_fingers) <= 3
+        ):
+            raise ValueError(f"{term} minimum_raw_opposing_fingers must be in [0, 3]")
+        self._minimum_raw_opposing_fingers = int(minimum_raw_opposing_fingers)
         self._rows: list[np.ndarray] = []
         self._radius: list[float] = []
         self._length: list[float] = []
@@ -771,10 +924,31 @@ class LeapHoraGraspRecorder(RecorderTerm):
         self._trial_mass_max = np.full(env.num_envs, -np.inf)
         self._trial_friction_min = np.full(env.num_envs, np.inf)
         self._trial_friction_max = np.full(env.num_envs, -np.inf)
+        self._contact_steps = np.zeros(env.num_envs, dtype=np.int32)
+        self._raw_thumb_steps = np.zeros(env.num_envs, dtype=np.int32)
+        self._raw_opposing_steps = np.zeros((env.num_envs, 3), dtype=np.int32)
         self._rejected_validation = 0
+        self._rejected_contact = 0
         self._rejected_self_collision = 0
         self._rejected_duplicates = 0
         self._saved = False
+
+    def _accumulate_raw_contact(self, ids: np.ndarray) -> None:
+        if not ids.size:
+            return
+        self._contact_steps[ids] += 1
+        self._raw_thumb_steps[ids] += self._quality.grasp.raw_thumb_contact[ids]
+        self._raw_opposing_steps[ids] += self._quality.grasp.raw_opposing_contacts[ids]
+
+    def record_post_reset(self, env_ids: np.ndarray) -> None:
+        ids = np.asarray(env_ids, dtype=np.intp)
+        self._contact_steps[ids] = 0
+        self._raw_thumb_steps[ids] = 0
+        self._raw_opposing_steps[ids] = 0
+
+    def record_post_step(self) -> None:
+        env = cast("_HoraGraspEnv", self._env)
+        self._accumulate_raw_contact(np.flatnonzero(~env.reset_buf).astype(np.intp))
 
     def _self_collision(self, ids: np.ndarray) -> np.ndarray:
         values = np.asarray(self._self_collision_view.read())
@@ -870,6 +1044,7 @@ class LeapHoraGraspRecorder(RecorderTerm):
     def record_pre_reset(self, env_ids: np.ndarray) -> None:
         env = cast("_HoraGraspEnv", self._env)
         ids = np.asarray(env_ids, dtype=np.intp)
+        self._accumulate_raw_contact(ids)
         mass, friction = self._physics_values(ids)
         self._trial_mass_min[ids] = np.minimum(self._trial_mass_min[ids], mass)
         self._trial_mass_max[ids] = np.maximum(self._trial_mass_max[ids], mass)
@@ -884,6 +1059,18 @@ class LeapHoraGraspRecorder(RecorderTerm):
             (observation.dof_pos[ids] > lower) & (observation.dof_pos[ids] < upper), axis=1
         )
         self_collision = self._self_collision(ids)
+        contact_steps = np.maximum(self._contact_steps[ids], 1)[:, None]
+        raw_thumb_fraction = self._raw_thumb_steps[ids] / contact_steps[:, 0]
+        raw_opposing_fraction = self._raw_opposing_steps[ids] / contact_steps
+        raw_support_count = np.count_nonzero(
+            raw_opposing_fraction >= self._minimum_raw_opposing_contact_fraction,
+            axis=1,
+        )
+        contact_passed = (
+            (raw_thumb_fraction >= self._minimum_raw_thumb_contact_fraction)
+            & (raw_opposing_fraction[:, 1] >= self._minimum_raw_middle_contact_fraction)
+            & (raw_support_count >= self._minimum_raw_opposing_fingers)
+        )
         passed = (
             env.reset_time_outs[ids]
             & ~env.reset_terminated[ids]
@@ -891,8 +1078,10 @@ class LeapHoraGraspRecorder(RecorderTerm):
             & ~self._quality.grasp.palm_supported[ids]
             & away_from_limits
             & ~self_collision
+            & contact_passed
         )
         self._rejected_self_collision += int(np.count_nonzero(self_collision))
+        self._rejected_contact += int(np.count_nonzero(~contact_passed))
         settled = np.concatenate(
             (
                 observation.dof_pos[ids],
@@ -939,6 +1128,7 @@ class LeapHoraGraspRecorder(RecorderTerm):
                 "hora_grasp/cache_size": float(len(self._rows)),
                 "hora_grasp/rejected_validation": float(self._rejected_validation),
                 "hora_grasp/rejected_self_collision": float(self._rejected_self_collision),
+                "hora_grasp/rejected_contact": float(self._rejected_contact),
                 "hora_grasp/rejected_near_duplicates": float(self._rejected_duplicates),
             }
         )
@@ -951,6 +1141,7 @@ class LeapHoraGraspRecorder(RecorderTerm):
                     "validation_trials": self._validation_trials,
                     "rejected_validation": self._rejected_validation,
                     "rejected_self_collision": self._rejected_self_collision,
+                    "rejected_contact": self._rejected_contact,
                     "rejected_near_duplicates": self._rejected_duplicates,
                     "output_path": str(self._output_path),
                     **self._accepted_distribution(),

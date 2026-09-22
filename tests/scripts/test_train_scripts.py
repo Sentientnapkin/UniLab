@@ -165,6 +165,65 @@ def test_ppo_explicit_load_run_requests_resume(
     assert mod._training_resume_requested(load_run) is True
 
 
+def test_ppo_resume_load_cfg_supports_full_and_actor_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _train_rsl_rl(monkeypatch)
+
+    full = OmegaConf.create({"training": {"resume_mode": "full"}})
+    actor_only = OmegaConf.create({"training": {"resume_mode": "actor_only"}})
+
+    assert mod._ppo_resume_load_cfg(full) is None
+    assert mod._ppo_resume_load_cfg(actor_only) == {
+        "actor": True,
+        "critic": False,
+        "optimizer": False,
+        "iteration": False,
+        "rnd": False,
+    }
+
+
+def test_ppo_actor_only_warm_start_resets_logger_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _train_rsl_rl(monkeypatch)
+    runner = MagicMock()
+    runner.logger.tot_time = 12.0
+    runner.logger.tot_timesteps = 1234
+    cfg = OmegaConf.create({"training": {"resume_mode": "actor_only"}})
+
+    mod._load_ppo_training_checkpoint(
+        runner,
+        "/tmp/model.pt",
+        cfg,
+        map_location="cpu",
+    )
+
+    runner.load.assert_called_once_with(
+        "/tmp/model.pt",
+        load_cfg={
+            "actor": True,
+            "critic": False,
+            "optimizer": False,
+            "iteration": False,
+            "rnd": False,
+        },
+        map_location="cpu",
+    )
+    assert runner.logger.tot_time == 0.0
+    assert runner.logger.tot_timesteps == 0
+
+
+def test_ppo_resume_load_cfg_rejects_unknown_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _train_rsl_rl(monkeypatch)
+    cfg = OmegaConf.create({"training": {"resume_mode": "mystery"}})
+
+    with pytest.raises(ValueError, match="training.resume_mode"):
+        mod._ppo_resume_load_cfg(cfg)
+
+
 def test_offpolicy_hydra_default_algo():
     cfg = _offpolicy_cfg()
     assert cfg.algo.algo == "sac"
@@ -2942,8 +3001,9 @@ class _FakePlaybackEnv:
         return self.video_path
 
 
+@pytest.mark.parametrize("action_mode", ["policy", "zero"])
 def test_train_rsl_rl_play_uses_shared_playback_session_factory(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, action_mode: str
 ):
     mod = _train_rsl_rl(monkeypatch)
     cfg = _ppo_cfg(
@@ -2952,6 +3012,7 @@ def test_train_rsl_rl_play_uses_shared_playback_session_factory(
             "training.play_only=true",
             "training.play_render_mode=record",
             "training.play_steps=5",
+            f"interactive.action_mode={action_mode}",
         ]
     )
     run_dir = tmp_path / "run"
@@ -2993,7 +3054,7 @@ def test_train_rsl_rl_play_uses_shared_playback_session_factory(
     factory_kwargs = captured["factory_kwargs"]
     playback_cfg = factory_kwargs["playback_cfg"]
     assert playback_cfg.task == cfg.training.task_name
-    assert playback_cfg.action_mode == "policy"
+    assert playback_cfg.action_mode == action_mode
     assert playback_cfg.policy_obs_mode == "flat"
     assert playback_cfg.algo_log_name == cfg.algo.algo_log_name
     assert playback_cfg.num_envs == cfg.training.play_env_num

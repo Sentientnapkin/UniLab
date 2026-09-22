@@ -27,8 +27,16 @@ def build_case_overrides(
     *,
     policy_family: str,
     checkpoint: str = "-1",
+    action_mode: str = "policy",
 ) -> list[str]:
     """Translate one manifest row into fixed Hydra environment overrides."""
+    if action_mode not in {"policy", "zero"}:
+        raise ValueError(f"unsupported evaluation action mode {action_mode!r}")
+    # Passive retention isolates the cached pose and physical domain.  Policy-I/O
+    # noise must not move an otherwise fixed accumulated target.
+    observation_noise = 0.0 if action_mode == "zero" else case["observation_noise_std"]
+    action_noise = 0.0 if action_mode == "zero" else case["action_noise_std"]
+    action_delay_steps = 0 if action_mode == "zero" else case["action_delay_steps"]
     if policy_family != "hora" and (
         case["cylinder_radius"] != 0.032 or case["cylinder_length"] != 0.070
     ):
@@ -50,6 +58,7 @@ def build_case_overrides(
         "training.play_env_num=1",
         "training.play_render_mode=none",
         "training.play_steps=400",
+        f"interactive.action_mode={action_mode}",
         # The manifest intentionally fixes/noises policy-I/O fields differently
         # from the training snapshot; the evaluator records those differences.
         "training.sim2sim_strict=false",
@@ -71,7 +80,7 @@ def build_case_overrides(
         f"env.events.pd_gains.params.kd_range=[{_scalar(0.1 * gain)},{_scalar(0.1 * gain)}]",
         "env.events.pd_gains.params.operation=abs",
         f"env.events.encoder_bias.params.bias_range=[{_scalar(case['encoder_bias'])},{_scalar(case['encoder_bias'])}]",
-        f"env.observations.critic.terms.rotation.params.joint_noise={_scalar(case['observation_noise_std'])}",
+        f"env.observations.critic.terms.rotation.params.joint_noise={_scalar(observation_noise)}",
         "++env.recorders.evaluation.func=unilab.tasks.manipulation.leap_inhand.evaluation.LeapEvaluationRecorder",
         f"++env.recorders.evaluation.params.output_path={output_path}",
         f"++env.recorders.evaluation.params.case_id={case['id']}",
@@ -94,9 +103,9 @@ def build_case_overrides(
                 f"[{_scalar(case['cylinder_radius'])},{_scalar(case['cylinder_length'])}]",
                 "env.events.cylinder_mass_inertia.params.density_range="
                 f"[{_scalar(density)},{_scalar(density)}]",
-                f"env.actions.hand.latency_steps_range=[{case['action_delay_steps']},{case['action_delay_steps']}]",
-                f"env.actions.hand.action_noise_std_schedule=[{{step:0,std:{_scalar(case['action_noise_std'])}}}]",
-                f"env.observations.actor.terms.hardware.params.joint_noise={_scalar(case['observation_noise_std'])}",
+                f"env.actions.hand.latency_steps_range=[{action_delay_steps},{action_delay_steps}]",
+                f"env.actions.hand.action_noise_std_schedule=[{{step:0,std:{_scalar(action_noise)}}}]",
+                f"env.observations.actor.terms.hardware.params.joint_noise={_scalar(observation_noise)}",
             )
         )
     else:
@@ -118,9 +127,15 @@ def build_case_overrides(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
-    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--checkpoint", default="-1")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--policy-family", choices=("gait", "hora"), required=True)
+    parser.add_argument(
+        "--action-mode",
+        choices=("policy", "zero"),
+        default="policy",
+        help="Use the checkpoint policy or hold the reset target with zero increments.",
+    )
     parser.add_argument(
         "--task-owner",
         default=None,
@@ -163,6 +178,7 @@ def main() -> int:
             case_output,
             policy_family=args.policy_family,
             checkpoint=args.checkpoint,
+            action_mode=args.action_mode,
         )
         command = build_command(
             mode="eval",
@@ -192,8 +208,11 @@ def main() -> int:
         return 0
     summary = summarize_episode_reports(reports)
     summary["manifest"] = str(args.manifest.resolve())
-    summary["checkpoint"] = str(Path(args.checkpoint).resolve())
+    summary["checkpoint"] = (
+        str(Path(args.checkpoint).resolve()) if args.action_mode == "policy" else None
+    )
     summary["policy_family"] = args.policy_family
+    summary["action_mode"] = args.action_mode
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(args.output)

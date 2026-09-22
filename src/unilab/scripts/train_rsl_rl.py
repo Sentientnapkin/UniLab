@@ -88,6 +88,73 @@ def _training_resume_requested(load_run: Any) -> bool:
     return str(load_run) not in {"", "-1"}
 
 
+def _ppo_resume_load_cfg(cfg: DictConfig) -> dict[str, bool] | None:
+    """Translate the UniLab resume mode into RSL-RL component flags."""
+    mode = str(OmegaConf.select(cfg, "training.resume_mode", default="full")).strip().lower()
+    if mode == "full":
+        return None
+    if mode == "actor_only":
+        return {
+            "actor": True,
+            "critic": False,
+            "optimizer": False,
+            "iteration": False,
+            "rnd": False,
+        }
+    if mode == "actor_critic_only":
+        return {
+            "actor": True,
+            "critic": True,
+            "optimizer": False,
+            "iteration": False,
+            "rnd": False,
+        }
+    raise ValueError(
+        f"training.resume_mode must be 'full' or 'actor_only', got {mode!r}"
+    )
+
+
+def _load_ppo_training_checkpoint(
+    runner: Any,
+    checkpoint: str,
+    cfg: DictConfig,
+    *,
+    map_location: str,
+) -> None:
+    """Resume all PPO state or warm-start only the actor from a checkpoint."""
+    load_cfg = _ppo_resume_load_cfg(cfg)
+    runner.load(checkpoint, load_cfg=load_cfg, map_location=map_location)
+    if load_cfg is not None:
+        # The patched RSL-RL loader restores logger counters independently of
+        # iteration state. Actor-only warm starts are new runs, so their time
+        # and sample axes must also begin at zero.
+        runner.logger.tot_time = 0.0
+        runner.logger.tot_timesteps = 0
+
+def _freeze_actor_for_critic_warmup(runner: Any) -> None:
+    """Freeze the policy while allowing only the critic to learn."""
+
+    actor = runner.alg.actor
+    critic = runner.alg.critic
+
+    for param in actor.parameters():
+        param.requires_grad_(False)
+
+    for param in critic.parameters():
+        param.requires_grad_(True)
+
+    # PPO calls actor.update_normalization() after updates. Prevent the
+    # Stage-A actor's running observation statistics from drifting.
+    if hasattr(actor, "freeze_normalization"):
+        actor.freeze_normalization = True
+
+    assert not any(param.requires_grad for param in actor.parameters())
+    assert any(param.requires_grad for param in critic.parameters())
+
+    if hasattr(actor, "freeze_normalization"):
+        assert actor.freeze_normalization is True
+
+
 def _backend_adapter(cfg: DictConfig) -> BackendAdapter:
     return BackendAdapter(
         cfg,
@@ -366,7 +433,7 @@ def play_rsl_rl(cfg: DictConfig, device: str) -> str | None:
         checkpoint=normalize_checkpoint_value(
             OmegaConf.select(cfg, "algo.checkpoint", default=None)
         ),
-        action_mode="policy",
+        action_mode=str(OmegaConf.select(cfg, "interactive.action_mode", default="policy")),
         policy_obs_mode="flat",
         algo_log_name=str(cfg.algo.algo_log_name),
         log_root=None,
@@ -702,8 +769,31 @@ def main(cfg: DictConfig) -> None:
                     if _training_resume_requested(cfg.algo.load_run):
                         resume_path, _ = parse_checkpoint_path(cfg, root_dir=Path.cwd())
                         if resume_path:
-                            print(f"Resuming from {resume_path}")
-                            runner.load(str(resume_path), map_location=device)
+                            resume_mode = str(
+                                OmegaConf.select(
+                                    cfg, "training.resume_mode", default="full"
+                                )
+                            )
+                            print(f"Loading {resume_mode} checkpoint from {resume_path}")
+                            _load_ppo_training_checkpoint(
+                                runner,
+                                str(resume_path),
+                                cfg,
+                                map_location=device,
+                            )
+
+                    # Freeze the transferred Stage-A policy only after its
+                    # checkpoint has been loaded, while leaving the fresh
+                    # critic trainable.
+                    if bool(
+                        OmegaConf.select(
+                            cfg, "training.freeze_actor", default=False
+                        )
+                    ):
+                        _freeze_actor_for_critic_warmup(runner)
+                        print(
+                            "[train] Actor frozen; critic-only PPO warmup enabled"
+                        )
 
                     initial_timesteps = int(getattr(runner.logger, "tot_timesteps", 0))
                     initial_training_time = float(getattr(runner.logger, "tot_time", 0.0))

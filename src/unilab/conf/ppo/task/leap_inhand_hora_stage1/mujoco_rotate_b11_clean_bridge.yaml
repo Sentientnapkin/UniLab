@@ -1,0 +1,19 @@
+# @package _global_
+
+defaults:
+  - /task/leap_inhand_hora_stage1/mujoco_rotate_b8
+  - _self_
+
+algo:
+  experiment_name: leap_hora_stage1_rotate_b11_clean_bridge
+
+  algorithm:
+    learning_rate: 1.0e-4
+    desired_kl: 0.005
+    clip_param: 0.1
+    num_learning_epochs: 3
+    schedule: adaptive
+
+training:
+  resume_mode: actor_critic_only
+  freeze_actor: false

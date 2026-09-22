@@ -1,0 +1,27 @@
+{
+  "duplicate_fraction": 0.0020000000000000018,
+  "family_counts": {
+    "balanced_thumb_index_middle": 400,
+    "index_forward_load": 560,
+    "middle_opposition_expansion": 800,
+    "outer_finger_load": 240
+  },
+  "middle_enriched_rows": 800,
+  "output_path": "/Users/School/Research/UniLab-hora/src/unilab/assets/caches/hora/leap_precision_grasps_v5_stage_a_weighted.npz",
+  "raw_contact": {
+    "enriched_middle_minimum": 0.5,
+    "middle_mean": 0.3471708818250587,
+    "middle_threshold_fraction": 0.4135,
+    "thumb_mean": 0.9107135076427025
+  },
+  "rows": 2000,
+  "selection_path": "/Users/School/Research/UniLab-hora/src/unilab/assets/caches/hora/leap_precision_grasps_v5_stage_a_weighted_selection.npz",
+  "tier_counts": {
+    "anchor": 1600,
+    "invalid": 0,
+    "marginal": 0,
+    "recoverable": 400
+  },
+  "unique_middle_enriched_source_rows": 800,
+  "unique_source_rows": 1996
+}

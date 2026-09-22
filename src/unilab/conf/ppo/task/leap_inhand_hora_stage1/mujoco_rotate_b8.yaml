@@ -1,0 +1,23 @@
+# @package _global_
+# Stage B8: return to the reward balance reported by HORA while preserving the
+# qualified LEAP grasp cache and checkpoint-compatible policy interface.
+defaults:
+  - /task/leap_inhand_hora_stage1/mujoco_stabilize
+  - _self_
+
+algo:
+  experiment_name: leap_hora_stage1_rotate_b8_exact
+
+reward:
+  # HORA's clipped axial-velocity task reward has an implicit coefficient 1.0.
+  rotate: {weight: 1.0}
+  pose_diff: {weight: -0.3}
+  obj_linvel: {weight: -0.3}
+  torque: {weight: -0.1}
+  work: {weight: -2.0}
+
+  # These LEAP curriculum/shaping terms are deliberately disabled so B8 tests
+  # the paper's compact reward balance. Geometric fall termination remains on.
+  retained: {weight: 0.0}
+  frontier: {weight: 0.0}
+  drop: {weight: 0.0}

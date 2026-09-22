@@ -1,0 +1,15 @@
+# @package _global_
+# Stage B7: a longer higher-motion experiment from B6 checkpoint 594. Increase
+# the axial-rotation incentive and reduce pose-restoration pressure while
+# preserving B6's reduced dense-retention term.
+defaults:
+  - /task/leap_inhand_hora_stage1/mujoco_rotate_b6
+  - _self_
+
+algo:
+  experiment_name: leap_hora_stage1_rotate_b7_exact
+
+reward:
+  rotate: {weight: 3.0}
+  retained: {weight: 0.1}
+  pose_diff: {weight: -0.1}

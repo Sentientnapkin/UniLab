@@ -64,6 +64,9 @@ training:
   # assigns complete physical-core groups, including logical siblings.
   dp_collector_cpu_ids: null
   device: null
+  # full restores actor, critic, optimizer, iteration, and logger counters.
+  # actor_only is a fresh PPO run initialized from checkpoint actor weights.
+  resume_mode: full
   logger: tensorboard
   wandb_project: unilab
   wandb_entity: null
@@ -96,6 +99,7 @@ training:
   log_root: null
   num_timesteps: null
   log_dir: null
+  freeze_actor: false
 
 interactive:
   action_mode: zero

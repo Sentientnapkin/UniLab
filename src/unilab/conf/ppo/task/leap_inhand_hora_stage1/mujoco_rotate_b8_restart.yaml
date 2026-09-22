@@ -1,0 +1,13 @@
+# @package _global_
+# B8 clean PPO restart: initialize only the actor from the selected Stage A
+# hold policy. The critic, optimizer, learning rate, iteration, and logger axes
+# are fresh for the HORA reward objective.
+defaults:
+  - /task/leap_inhand_hora_stage1/mujoco_rotate_b8
+  - _self_
+
+algo:
+  experiment_name: leap_hora_stage1_rotate_b8_restart_exact
+
+training:
+  resume_mode: actor_only

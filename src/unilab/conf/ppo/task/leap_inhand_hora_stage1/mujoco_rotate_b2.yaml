@@ -1,0 +1,18 @@
+# @package _global_
+# Stage B2: restart from the selected Stage A checkpoint and make signed axial
+# rotation competitive with grasp retention. This deliberately does not inherit
+# any Stage B1 checkpoint, whose motion remained small and directionally wrong.
+defaults:
+  - /task/leap_inhand_hora_stage1/mujoco_stabilize
+  - _self_
+
+algo:
+  experiment_name: leap_hora_stage1_rotate_b2_exact
+
+reward:
+  # At the end of B1, retention contributed roughly 40--100 times more than
+  # rotation. These weights make the current wrong-way rotation penalty and
+  # retention benefit comparable, while rewarding a useful +0.1 rad/s motion
+  # more strongly than a static grasp.
+  rotate: {weight: 1.0}
+  retained: {weight: 0.5}

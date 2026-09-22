@@ -1,0 +1,13 @@
+# @package _global_
+# Stage B3: retain B2's successful signed-direction objective while restoring
+# HORA's strong initial-grasp pose penalty. This tests whether suppressing the
+# one-way hand deformation seen after B2 checkpoint 390 produces a cyclic gait.
+defaults:
+  - /task/leap_inhand_hora_stage1/mujoco_rotate_b2
+  - _self_
+
+algo:
+  experiment_name: leap_hora_stage1_rotate_b3_exact
+
+reward:
+  pose_diff: {weight: -0.3}
